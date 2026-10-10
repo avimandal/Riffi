@@ -1,0 +1,12 @@
+node_modules
+dist
+dev-dist
+coverage
+test-results
+playwright-report
+*.local
+.DS_Store
+api/config.php
+riffi-config.php
+public/models/basic-pitch/
+tests/e2e/.generated/
