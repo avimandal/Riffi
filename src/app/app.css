@@ -786,3 +786,27 @@
   margin-bottom: 16px;
   padding: 16px;
 }
+
+.gadget-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 16px 20px;
+  color: var(--text);
+  text-decoration: none;
+  min-height: 72px;
+}
+.gadget-card > span:nth-child(2) {
+  flex: 1;
+}
+.gadget-card-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #f4f5f7, #c7ccd3);
+  color: #2b2f36;
+}

@@ -14,9 +14,10 @@ const ResultsScreen = lazy(() => import('../screens/results/ResultsScreen'));
 const ProgressScreen = lazy(() => import('../screens/progress/ProgressScreen'));
 const ParentScreen = lazy(() => import('../screens/parent/ParentScreen'));
 const PrivacyScreen = lazy(() => import('../screens/privacy/PrivacyScreen'));
+const GadgetScreen = lazy(() => import('../screens/gadget/GadgetScreen'));
 
 /** Screens that need a kid selected. */
-const NEEDS_PROFILE = ['/home', '/add', '/review', '/practice', '/results', '/progress'];
+const NEEDS_PROFILE = ['/home', '/add', '/review', '/practice', '/results', '/progress', '/gadget'];
 
 function Routes() {
   const path = usePath();
@@ -44,6 +45,7 @@ function Routes() {
     nav = false;
   } else if ((m = matchPath('/results/:id', path))) screen = <ResultsScreen id={m.params.id} />;
   else if (pathname === '/progress') screen = <ProgressScreen />;
+  else if (pathname === '/gadget') screen = <GadgetScreen />;
   else if (pathname === '/parent') {
     screen = <ParentScreen />;
     nav = !!profile;

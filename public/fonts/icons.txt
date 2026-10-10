@@ -6,6 +6,7 @@ arrow_downward
 arrow_forward
 arrow_upward
 auto_awesome
+av_timer
 build
 calendar_month
 check
@@ -32,6 +33,7 @@ keyboard_double_arrow_up
 lightbulb
 local_fire_department
 lock
+menu
 mic
 military_tech
 more_horiz
@@ -60,7 +62,9 @@ undo
 upload
 upload_file
 vibration
+violin
 visibility
+voice
 volume_up
 zoom_in
 zoom_out

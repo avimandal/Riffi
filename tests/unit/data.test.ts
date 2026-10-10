@@ -125,3 +125,12 @@ describe('storage and backup', () => {
     expect(() => validateBackup({ app: 'Riffi', version: 1, profiles: [{}], pieces: [], sessions: [] })).toThrow('damaged');
   });
 });
+
+describe('metronome practice counts towards the streak', () => {
+  it('a counted metronome session is a practice day', () => {
+    const now = new Date(2026, 9, 10, 18, 0);
+    const s = [session('2026-10-09'), session('2026-10-10', { mode: 'metronome', pieceId: 'gadget', pieceTitle: 'Metronome practice', activeMs: 60_000 })];
+    expect(currentStreak(s, now)).toBe(2);
+    expect(weekMinutes(s, now)).toBe(6);
+  });
+});

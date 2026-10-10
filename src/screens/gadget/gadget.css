@@ -1,0 +1,522 @@
+/*
+ * The Tuner & Metronome: an original handheld practice gadget.
+ * Silver plastic body, greenish LCD, three LEDs, chunky buttons, a volume
+ * slider along the top edge and a speaker grille on the right. It's a
+ * physical object, so it keeps its own colours in light and dark themes.
+ */
+
+.gadget-page {
+  max-width: 720px;
+}
+.gadget-layout {
+  display: block;
+}
+@media (min-width: 1000px) {
+  .gadget-page {
+    max-width: 1120px;
+  }
+  .gadget-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
+  }
+  .gadget-layout .g-menu {
+    margin-top: 0;
+  }
+}
+
+.gadget {
+  --body-hi: #f4f5f7;
+  --body: #d9dce1;
+  --body-lo: #b9bec6;
+  --lcd-bg: #b7c4a3;
+  --lcd-bg-2: #a6b591;
+  --lcd-ink: #1c2a1b;
+  --lcd-ghost: rgba(28, 42, 27, 0.08);
+  --btn: #eceef1;
+  --btn-lo: #a3a8b1;
+  --btn-ink: #2b2f36;
+  container-type: inline-size;
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 10px 14px 12px;
+  border-radius: 36px;
+  background: linear-gradient(160deg, var(--body-hi) 0%, var(--body) 45%, var(--body-lo) 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -4px 8px rgba(0, 0, 0, 0.12),
+    0 14px 30px rgba(20, 20, 40, 0.28),
+    0 3px 6px rgba(20, 20, 40, 0.2);
+  color: var(--btn-ink);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Volume slider along the top edge */
+.g-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 18px 8px;
+}
+.g-vol-label {
+  font: 700 12px/1 ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  letter-spacing: 0.12em;
+  color: #6b7079;
+}
+.g-vol {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 44px;
+  background: transparent;
+  min-height: 0;
+  accent-color: auto;
+}
+.g-vol::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(#8f949c, #c7cbd1);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.45);
+}
+.g-vol::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(#8f949c, #c7cbd1);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.45);
+}
+.g-vol::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 34px;
+  height: 26px;
+  margin-top: -9px;
+  border-radius: 7px;
+  background: repeating-linear-gradient(90deg, #f7f8fa 0 3px, #c9cdd3 3px 5px);
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35), inset 0 1px 0 #fff;
+  border: 1px solid #9aa0a8;
+}
+.g-vol::-moz-range-thumb {
+  width: 34px;
+  height: 26px;
+  border-radius: 7px;
+  background: repeating-linear-gradient(90deg, #f7f8fa 0 3px, #c9cdd3 3px 5px);
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35);
+  border: 1px solid #9aa0a8;
+}
+
+.g-face {
+  display: grid;
+  grid-template-columns: 1fr clamp(22px, 7cqw, 40px);
+  gap: clamp(8px, 2.4cqw, 16px);
+}
+.g-main {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(8px, 2.5cqw, 14px);
+  min-width: 0;
+}
+
+/* LEDs */
+.g-leds {
+  display: flex;
+  justify-content: center;
+  gap: clamp(28px, 10cqw, 56px);
+  padding-top: 2px;
+}
+.g-led-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.g-led {
+  width: clamp(14px, 4cqw, 20px);
+  height: clamp(14px, 4cqw, 20px);
+  border-radius: 50%;
+  border: 2px solid #8d929a;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.35);
+}
+.g-led.red {
+  background: radial-gradient(circle at 35% 35%, #8a4b4b, #5a2626);
+}
+.g-led.green {
+  background: radial-gradient(circle at 35% 35%, #4f7a53, #26402a);
+}
+.g-led.red.on {
+  background: radial-gradient(circle at 35% 35%, #ffd1c9, #ff3b2f 45%, #c4160b);
+  box-shadow: 0 0 10px 3px rgba(255, 59, 47, 0.75), inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+.g-led.green.on {
+  background: radial-gradient(circle at 35% 35%, #e0ffd9, #39e05a 45%, #109b2c);
+  box-shadow: 0 0 10px 3px rgba(57, 224, 90, 0.75), inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+.g-led-label {
+  font-size: 13px;
+  font-weight: 800;
+  color: #5d626b;
+  line-height: 1;
+}
+
+/* LCD */
+.g-lcd {
+  border-radius: 14px;
+  padding: clamp(8px, 2.6cqw, 14px) clamp(10px, 3.2cqw, 18px);
+  background: linear-gradient(170deg, var(--lcd-bg), var(--lcd-bg-2));
+  border: 6px solid #43474f;
+  box-shadow:
+    inset 0 3px 8px rgba(0, 0, 0, 0.35),
+    0 1px 0 rgba(255, 255, 255, 0.8);
+  color: var(--lcd-ink);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-weight: 700;
+  min-height: clamp(150px, 46cqw, 230px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.sevenseg .seg-on {
+  fill: var(--lcd-ink);
+}
+.sevenseg .seg-off {
+  fill: var(--lcd-ghost);
+}
+.lcd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.lcd-top {
+  font-size: clamp(11px, 3cqw, 15px);
+  letter-spacing: 0.1em;
+  justify-content: space-between;
+}
+.lcd-mode {
+  padding: 1px 6px;
+  border: 2px solid var(--lcd-ink);
+  border-radius: 4px;
+}
+.lcd-rec {
+  animation: g-blink 1.2s steps(2, start) infinite;
+}
+@keyframes g-blink {
+  to {
+    visibility: hidden;
+  }
+}
+.lcd-big {
+  justify-content: center;
+  align-items: flex-end;
+  gap: 8px;
+}
+.lcd-digits {
+  height: clamp(64px, 24cqw, 120px);
+  width: auto;
+}
+.lcd-unit {
+  font-size: clamp(14px, 4cqw, 20px);
+  padding-bottom: 6px;
+}
+.lcd-info {
+  justify-content: space-between;
+  font-size: clamp(16px, 5cqw, 24px);
+}
+.lcd-tempo {
+  font-style: italic;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+.lcd-bottom {
+  font-size: clamp(12px, 3.4cqw, 16px);
+  letter-spacing: 0.06em;
+  gap: 14px;
+}
+.lcd-beat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.lcd-small-digits {
+  height: clamp(20px, 6cqw, 28px);
+  width: auto;
+}
+.lcd-played {
+  margin-left: auto;
+}
+.lcd-note {
+  justify-content: center;
+}
+.lcd-note-name {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.lcd-note .lcd-digits {
+  height: clamp(54px, 18cqw, 90px);
+}
+.lcd-acc {
+  font-size: clamp(26px, 9cqw, 44px);
+  line-height: 1;
+  min-width: 0.6em;
+}
+.lcd-oct {
+  font-size: clamp(16px, 5cqw, 24px);
+  align-self: flex-end;
+}
+.lcd-msg {
+  font-size: clamp(18px, 6cqw, 28px);
+  padding: 10px 0;
+}
+.lcd-strings {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+}
+.lcd-strings span {
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.lcd-strings .sel {
+  background: var(--lcd-ink);
+  color: var(--lcd-bg);
+}
+.g-needle {
+  width: 100%;
+  max-height: clamp(70px, 24cqw, 120px);
+}
+.g-arc {
+  fill: none;
+  stroke: var(--lcd-ink);
+  stroke-width: 2.5;
+}
+.g-tick {
+  stroke: var(--lcd-ink);
+  stroke-width: 2.5;
+}
+.g-tick-centre {
+  stroke-width: 5;
+}
+.g-scale {
+  fill: var(--lcd-ink);
+  font-size: 15px;
+  font-weight: 800;
+}
+.g-needle-hand {
+  transform-origin: 100px 106px;
+  transition: transform 90ms linear;
+}
+.g-needle-hand line {
+  stroke: var(--lcd-ink);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+}
+.g-needle-hand.idle line {
+  stroke: var(--lcd-ghost);
+}
+.g-hub {
+  fill: var(--lcd-ink);
+}
+
+/* Buttons */
+.g-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(10px, 3cqw, 16px) clamp(8px, 2.6cqw, 14px);
+  padding: 4px 2px 0;
+}
+.mode-tuner .g-buttons {
+  grid-template-columns: repeat(4, 1fr);
+}
+.g-btn-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.g-btn-wrap.g-wide {
+  grid-column: span 2;
+}
+.g-btn-wrap.g-start {
+  grid-column: 1 / -1;
+}
+.g-btn {
+  width: 100%;
+  min-height: 56px;
+  border: 0;
+  padding: 0 0 6px;
+  border-radius: 16px;
+  background: var(--btn-lo);
+  cursor: pointer;
+  touch-action: manipulation;
+  font: inherit;
+  color: var(--btn-ink);
+}
+.g-btn-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 50px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff, var(--btn) 60%, #dfe2e7);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 0 rgba(0, 0, 0, 0.12);
+  font-weight: 800;
+  font-size: 18px;
+  transform: translateY(0);
+  transition: transform 60ms ease-out;
+}
+.g-btn:active .g-btn-face,
+.g-btn.is-held .g-btn-face,
+.g-btn[aria-pressed='true'] .g-btn-face {
+  transform: translateY(5px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+.g-btn[aria-pressed='true'] .g-btn-face {
+  background: linear-gradient(180deg, #dfe8ff, #c9d6f7);
+}
+.g-btn:focus-visible {
+  outline: 3px solid #1f6feb;
+  outline-offset: 3px;
+}
+.g-btn[disabled] {
+  opacity: 0.5;
+}
+.g-btn-caption {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #545962;
+}
+.g-mode .g-btn {
+  background: #5d6b85;
+}
+.g-mode .g-btn-face {
+  background: linear-gradient(180deg, #a9b8d6, #8394b8);
+  color: #fff;
+}
+.g-start .g-btn {
+  min-height: 72px;
+  background: #b0471f;
+}
+.g-start .g-btn-face {
+  min-height: 66px;
+  font-size: 22px;
+  background: linear-gradient(180deg, #ffb48a, #ff7a3d 60%, #f0682a);
+  color: #2a1000;
+}
+.g-start .g-btn[aria-pressed='true'] .g-btn-face {
+  background: linear-gradient(180deg, #ffd0b3, #ff9a66);
+}
+
+/* Speaker grille */
+.g-grille {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  align-content: center;
+  justify-items: center;
+  gap: clamp(6px, 1.8cqw, 10px) 0;
+  padding: 14px 0;
+  border-radius: 14px;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.25));
+}
+.g-grille span {
+  width: clamp(5px, 1.5cqw, 8px);
+  height: clamp(5px, 1.5cqw, 8px);
+  border-radius: 50%;
+  background: #4c5058;
+  box-shadow: inset 0 1px 1px #000, 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.g-brand {
+  text-align: center;
+  font: 800 12px/1 ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  letter-spacing: 0.3em;
+  color: #8a8f97;
+  padding-top: 10px;
+}
+
+/* Below the device */
+.g-hint {
+  text-align: center;
+  font-weight: 700;
+  font-size: 20px;
+  margin: 16px 0 0;
+}
+.g-hint.in {
+  color: var(--good);
+}
+.g-hint.flat,
+.g-hint.sharp {
+  color: var(--oops);
+}
+.g-message {
+  margin-top: 16px;
+}
+.g-menu {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+.g-switch {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  cursor: pointer;
+}
+.g-switch input {
+  width: 28px;
+  height: 28px;
+  accent-color: var(--primary);
+}
+.g-presets {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.g-presets li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.g-presets li span {
+  flex: 1;
+  font-weight: 700;
+}
+
+/* Phones: let the device use the whole width. */
+@media (max-width: 480px) {
+  .gadget-page {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .gadget {
+    border-radius: 28px;
+    padding: 8px 10px 10px;
+  }
+}
+
+/* Reduced motion: buttons still show they're pressed, but nothing moves. */
+@media (prefers-reduced-motion: reduce) {
+  .g-btn-face,
+  .g-needle-hand {
+    transition: none !important;
+  }
+  .g-btn:active .g-btn-face,
+  .g-btn.is-held .g-btn-face,
+  .g-btn[aria-pressed='true'] .g-btn-face {
+    transform: none;
+  }
+  .lcd-rec {
+    animation: none;
+  }
+}
