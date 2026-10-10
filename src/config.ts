@@ -19,7 +19,8 @@ export type Instrument = (typeof INSTRUMENTS)[number];
 export const DIFFICULTIES = ['easy', 'normal', 'tricky'] as const;
 export type Difficulty = (typeof DIFFICULTIES)[number];
 
-export type PracticeMode = 'playalong' | 'learn';
+/** 'metronome' = minutes counted by the Tuner & Metronome gadget. */
+export type PracticeMode = 'playalong' | 'learn' | 'metronome';
 export type MetronomeMode = 'sound' | 'visual' | 'vibrate';
 
 export const TEMPO_MIN = 40;

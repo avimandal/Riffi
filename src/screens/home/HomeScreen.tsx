@@ -58,6 +58,19 @@ export function HomeScreen() {
         </div>
       </section>
 
+      <Link to="/gadget" className="card gadget-card" data-testid="open-gadget">
+        <span className="gadget-card-icon" aria-hidden>
+          <Icon name="av_timer" size={40} />
+        </span>
+        <span>
+          <strong>{t.gadget.homeCard}</strong>
+          <span className="muted small" style={{ display: 'block' }}>
+            {t.gadget.homeCardHelp}
+          </span>
+        </span>
+        <Icon name="arrow_forward" />
+      </Link>
+
       {lastPiece && (
         <section className="card keep-going">
           <h2>{t.home.keepGoing}</h2>
