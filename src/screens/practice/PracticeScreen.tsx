@@ -36,7 +36,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
   const [bpm, setBpm] = useState<number | null>(null);
   const [metro, setMetro] = useState<MetronomeMode>(settings.metronomeMode);
   const [loop, setLoop] = useState<{ from: number; to: number } | null>(null);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(() => (typeof window !== 'undefined' && window.innerWidth < 600 ? 0.8 : 1));
   const [ui, setUi] = useState<UiState>('idle');
   const [notice, setNotice] = useState<string | null>(null);
   const [analysePct, setAnalysePct] = useState(0);
@@ -109,7 +109,9 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
       }
       const marks: StoredNoteMark[] = [];
       if (outcome.score) {
-        for (const n of outcome.score.notes) marks.push({ refs: n.refs, pitch: n.pitch, timing: n.timing });
+        // Only mark notes up to where they got: unreached notes aren't "missed".
+        const reached = Math.round(outcome.score.completion * outcome.score.notes.length);
+        for (const n of outcome.score.notes.slice(0, reached)) marks.push({ refs: n.refs, pitch: n.pitch, timing: n.timing });
       } else if (outcome.learn) {
         outcome.expected.forEach((e, i) => marks.push({ refs: e.refs, pitch: i < outcome.learn!.reached ? 'correct' : 'missed', timing: 'good' }));
       }

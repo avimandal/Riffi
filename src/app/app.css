@@ -377,6 +377,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+@media (max-width: 599px) {
+  .practice-title {
+    order: 10;
+    flex-basis: 100%;
+    font-size: 20px;
+  }
+  .practice-top .chip-btn {
+    margin-left: auto;
+  }
+}
 .practice-main {
   flex: 1;
   min-height: 0;

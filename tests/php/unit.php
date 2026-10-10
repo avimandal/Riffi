@@ -1,0 +1,85 @@
+<?php
+// Unit tests for api/omr.php helpers. Run: php tests/php/unit.php
+declare(strict_types=1);
+
+ob_start(); // keep header() calls quiet under the CLI
+require __DIR__ . '/../../api/omr.php';
+
+$failures = 0;
+function check(string $name, bool $ok): void
+{
+    global $failures;
+    fwrite(STDOUT, ($ok ? "  ok   " : "  FAIL ") . $name . "\n");
+    if (!$ok) {
+        $failures++;
+    }
+}
+
+$good = '<?xml version="1.0"?><score-partwise version="3.1"><part-list><score-part id="P1"><part-name/></score-part></part-list>'
+    . '<part id="P1"><measure number="1"><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure></part></score-partwise>';
+
+// Extraction
+check('extracts XML from fenced output', riffi_extract_xml("Here you go:\n```xml\n$good\n```\nEnjoy!") === $good);
+check('extracts XML without a declaration', str_starts_with(riffi_extract_xml('blah <score-partwise version="3.1"></score-partwise> blah'), '<score-partwise'));
+
+// Validation
+check('accepts valid MusicXML', riffi_validate_xml($good) === null);
+check('rejects empty output', riffi_validate_xml('') !== null);
+check('rejects broken XML with a line number', str_contains((string) riffi_validate_xml('<score-partwise><part>'), 'line'));
+check('rejects the wrong root', riffi_validate_xml('<score-timewise/>') !== null);
+check('rejects a score with no notes', riffi_validate_xml('<score-partwise><part id="P1"><measure><note><rest/></note></measure></part></score-partwise>') !== null);
+$xxe = '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><score-partwise><part><measure><note><pitch><step>&e;</step></pitch></note></measure></part></score-partwise>';
+riffi_validate_xml($xxe);
+check('does not expand external entities', true);
+
+// Warnings
+$withWarnings = str_replace('<part-list>', '<!-- riffi-warning: Bar 3: <b>smudged</b> sharp. --><part-list>', $good);
+$w = riffi_take_warnings($withWarnings);
+check('collects warnings', $w === ['Bar 3: smudged sharp.']);
+check('removes warning comments from the XML', !str_contains($withWarnings, 'riffi-warning') && riffi_validate_xml($withWarnings) === null);
+
+// CORS
+$cfg = riffi_default_config();
+$cfg['ALLOWED_ORIGIN'] = 'https://riffi.example.com';
+$_SERVER['HTTP_ORIGIN'] = 'https://evil.example.com';
+try {
+    riffi_cors($cfg);
+    check('blocks other origins', false);
+} catch (RiffiHttpError $e) {
+    check('blocks other origins', $e->status === 403);
+}
+$_SERVER['HTTP_ORIGIN'] = 'https://riffi.example.com';
+try {
+    riffi_cors($cfg);
+    check('allows the app origin', true);
+} catch (RiffiHttpError $e) {
+    check('allows the app origin', false);
+}
+unset($_SERVER['HTTP_ORIGIN']);
+
+// Rate limit
+$dir = sys_get_temp_dir() . '/riffi-test-' . bin2hex(random_bytes(4));
+$cfg['RATE_LIMIT_DIR'] = $dir;
+$cfg['RATE_LIMIT_PER_HOUR'] = 3;
+$_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+$blocked = false;
+for ($i = 0; $i < 4; $i++) {
+    try {
+        riffi_rate_limit($cfg);
+    } catch (RiffiHttpError $e) {
+        $blocked = $i === 3 && $e->status === 429;
+    }
+}
+check('rate limits after the hourly allowance', $blocked);
+$files = glob($dir . '/*.json');
+check('stores only hashed IPs', count($files) === 1 && !str_contains((string) file_get_contents($files[0]), '203.0.113.9') && !str_contains($files[0], '203.0.113.9'));
+array_map('unlink', $files);
+rmdir($dir);
+
+// Prompt content
+$content = riffi_user_content([['image/jpeg', 'AAA'], ['image/png', 'BBB']], 'piano');
+check('sends pages in order', $content[1]['source']['data'] === 'AAA' && $content[3]['source']['data'] === 'BBB');
+check('asks for both piano staves', str_contains(end($content)['text'], 'both staves'));
+
+fwrite(STDOUT, $failures === 0 ? "All PHP unit tests passed\n" : "$failures PHP test(s) failed\n");
+exit($failures === 0 ? 0 : 1);
