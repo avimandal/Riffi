@@ -13,6 +13,7 @@ check
 check_circle
 close
 cloud_off
+content_copy
 crop
 delete
 delete_forever

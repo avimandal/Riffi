@@ -32,19 +32,32 @@ return [
     // The app's origin (scheme + host, no trailing slash). Browser calls from anywhere else are refused.
     'ALLOWED_ORIGIN' => 'https://riffi.avimandal.com',
 
-    // Abuse protection: scans per IP per hour.
-    'RATE_LIMIT_PER_HOUR' => 20,
+    // Abuse protection: pages read per IP per hour (each page is one request).
+    'RATE_LIMIT_PER_HOUR' => 40,
     // Where the per-IP counters live. null = the system temp folder. Must not be web-accessible.
     'RATE_LIMIT_DIR' => null,
-    // Only set true if the site sits behind a proxy/CDN that sets X-Forwarded-For.
+    // Set true behind Cloudflare or another proxy, so the limit uses the visitor's IP
+    // (CF-Connecting-IP / X-Forwarded-For) instead of the proxy's.
     'TRUST_PROXY' => false,
 
+    // How long one page may take, in seconds. Keep it under Cloudflare's 100-second limit.
+    // The endpoint streams keep-alives while it waits, and stops cleanly at this deadline.
+    'REQUEST_SECONDS' => 85,
+
+    // Private error log (never contains your API keys). null = a riffi-logs folder next to
+    // the web root, e.g. /home/you/riffi-logs/omr.log; set a full path to choose; false = off.
+    'LOG_FILE' => null,
+    // Parents -> Settings -> Check music reader. Shows limits and whether the AI answers;
+    // never shows keys. Set false to turn the check off.
+    'DIAGNOSTICS' => true,
+
     // Advanced.
-    'GEMINI_MAX_TOKENS' => 65536,
+    // How hard Gemini "thinks" before answering: 'low' is fast enough for one page.
+    'GEMINI_THINKING' => 'low',
+    'GEMINI_MAX_TOKENS' => 16384,
     // Claude only:
-    'MAX_TOKENS' => 64000,
-    'EFFORT' => 'high',
+    'MAX_TOKENS' => 16384,
+    'EFFORT' => 'medium',
     // On a refusal, let the API retry on a fallback model in the same call.
     'USE_FALLBACKS' => true,
-    'TIMEOUT_SECONDS' => 240,
 ];

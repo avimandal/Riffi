@@ -88,16 +88,17 @@ export default function AddMusicScreen() {
       const thumbs = await Promise.all(prepared.map((b) => thumbnail(b)));
       const result = await readSheetMusic(prepared, instrument, (p) => {
         setBusy(
-          p.uploaded
-            ? { label: t.add.reading, note: t.add.readingNote }
-            : { label: t.add.uploading(p.page + 1, p.pages), note: t.add.readingNote },
+          p.stage === 'sending'
+            ? { label: t.add.uploading(p.page + 1, p.pages), note: t.add.readingNote }
+            : { label: t.add.readingPage(p.page + 1, p.pages), note: `${t.add.barsSoFar(p.bars)} · ${t.add.readingNote}` },
         );
       });
       await saveDraft({ musicxml: result.musicxml, warnings: result.warnings, thumbnails: thumbs, instrument });
       navigate('/review/draft');
     } catch (e) {
       const kind = e instanceof OmrError ? e.kind : 'server';
-      setError(t.add.errors[kind]);
+      const ref = e instanceof OmrError && (e.ref || e.code) ? ` ${t.add.errors.reference(e.ref ?? e.code ?? '')}` : '';
+      setError(`${t.add.errors[kind]}${ref}`);
     } finally {
       setBusy(null);
     }

@@ -15,28 +15,35 @@ function check(string $name, bool $ok): void
     }
 }
 
-$good = '<?xml version="1.0"?><score-partwise version="3.1"><part-list><score-part id="P1"><part-name/></score-part></part-list>'
-    . '<part id="P1"><measure number="1"><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure></part></score-partwise>';
+$fixture = (string) file_get_contents(__DIR__ . '/../fixtures/sheets/hermans-hornpipe.rn.json');
 
-// Extraction
-check('extracts XML from fenced output', riffi_extract_xml("Here you go:\n```xml\n$good\n```\nEnjoy!") === $good);
-check('extracts XML without a declaration', str_starts_with(riffi_extract_xml('blah <score-partwise version="3.1"></score-partwise> blah'), '<score-partwise'));
+// Riffi Notation validation
+[$score, $problem] = riffi_validate_score("Here you go:\n```json\n$fixture\n```");
+check('accepts the dense fixture page (in a code fence)', $problem === null && count($score['measures']) === 22);
+check('keeps the reader\'s warnings', count($score['warnings']) === 2);
+check('rejects an empty reply', riffi_validate_score('')[1] !== null);
+check('rejects non-JSON', riffi_validate_score('<score-partwise/>')[1] !== null);
+check('rejects a score with no measures', str_contains((string) riffi_validate_score('{"measures": []}')[1], 'measures'));
+check('names the bad token and bar', str_contains((string) riffi_validate_score('{"measures":[{"n":7,"s1":"C#5q H4q"}]}')[1], 'Measure 7'));
+check('a note needs a length', riffi_check_staff('C#5') !== null);
+check('accepts chords, ties, dots, tuplets and rests', riffi_check_staff('D4+A4h. C5q~ C5e 3(D5s E5s D5s) 3( A4e B4e C#5e ) rq R') === null);
+check('rejects a score with only rests', riffi_validate_score('{"measures":[{"n":1,"s1":"R"}]}')[1] === 'There are no notes.');
 
-// Validation
-check('accepts valid MusicXML', riffi_validate_xml($good) === null);
-check('rejects empty output', riffi_validate_xml('') !== null);
-check('rejects broken XML with a line number', str_contains((string) riffi_validate_xml('<score-partwise><part>'), 'line'));
-check('rejects the wrong root', riffi_validate_xml('<score-timewise/>') !== null);
-check('rejects a score with no notes', riffi_validate_xml('<score-partwise><part id="P1"><measure><note><rest/></note></measure></part></score-partwise>') !== null);
-$xxe = '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><score-partwise><part><measure><note><pitch><step>&e;</step></pitch></note></measure></part></score-partwise>';
-riffi_validate_xml($xxe);
-check('does not expand external entities', true);
+// Log scrubbing
+RiffiLog::init(['GEMINI_API_KEY' => 'AIzaSECRET-abcdefghijklmnop123', 'ANTHROPIC_API_KEY' => '', 'LOG_FILE' => false]);
+check('scrubs keys from log text', !str_contains(RiffiLog::scrub('x-goog-api-key: AIzaSECRET-abcdefghijklmnop123 ?key=abc'), 'SECRET') && !str_contains(RiffiLog::scrub('?key=abc&x=1'), 'abc'));
+check('scrubs key-shaped strings too', RiffiLog::scrub('AIzaZZZZZZZZZZZZZZZZZZZZZZZZZZZ') === '[key]');
 
-// Warnings
-$withWarnings = str_replace('<part-list>', '<!-- riffi-warning: Bar 3: <b>smudged</b> sharp. --><part-list>', $good);
-$w = riffi_take_warnings($withWarnings);
-check('collects warnings', $w === ['Bar 3: smudged sharp.']);
-check('removes warning comments from the XML', !str_contains($withWarnings, 'riffi-warning') && riffi_validate_xml($withWarnings) === null);
+// Error classification
+check('429 is busy', riffi_provider_error('gemini', 429, '{"error":{"message":"quota","status":"RESOURCE_EXHAUSTED"}}')->errorCode === 'busy');
+check('404 is a wrong model name', riffi_provider_error('gemini', 404, '{"error":{"message":"models/x is not found"}}')->errorCode === 'model_not_found');
+check('bad key', riffi_provider_error('gemini', 400, '{"error":{"message":"API key not valid. Please pass a valid API key."}}')->errorCode === 'bad_key');
+check('unsupported location', riffi_provider_error('gemini', 400, '{"error":{"message":"User location is not supported for the API use.","status":"FAILED_PRECONDITION"}}')->errorCode === 'region');
+check('Cloudflare-style HTML 502 is a provider error', riffi_provider_error('gemini', 502, '<html>Bad gateway</html>')->errorCode === 'provider_error');
+$call = new RiffiCall(microtime(true) + 30, null);
+check('could not resolve host is "blocked"', riffi_curl_error('gemini', 6, 'Could not resolve host', $call)->errorCode === 'blocked');
+check('TLS failure is "blocked"', riffi_curl_error('gemini', 60, 'SSL certificate problem', $call)->errorCode === 'blocked');
+check('curl timeout is "timeout"', riffi_curl_error('gemini', 28, 'Operation timed out', $call)->errorCode === 'timeout');
 
 // CORS
 $cfg = riffi_default_config();
@@ -77,9 +84,11 @@ array_map('unlink', $files);
 rmdir($dir);
 
 // Prompt content (provider-neutral)
-$parts = riffi_user_parts([['image/jpeg', 'AAA'], ['image/png', 'BBB']], 'piano');
+$parts = riffi_user_parts([['image/jpeg', 'AAA'], ['image/png', 'BBB']], 'piano', 2, 3);
 check('sends pages in order', $parts[1]['image'][1] === 'AAA' && $parts[3]['image'][1] === 'BBB');
-check('asks for both piano staves', str_contains(end($parts)['text'], 'both staves'));
+check('asks for both piano staves', str_contains(end($parts)['text'], 'staves": 2'));
+check('says which page this is', str_contains(end($parts)['text'], 'page 2 of 3'));
+check('prompt asks to ignore pencil and highlighter', str_contains(riffi_system_prompt(), 'highlighter'));
 $turns = [
     ['role' => 'user', 'parts' => $parts],
     ['role' => 'assistant', 'parts' => [['text' => 'broken']]],
@@ -87,21 +96,25 @@ $turns = [
 ];
 
 // Gemini adapter
-$g = RiffiGemini::body('SYSTEM', $turns, 1000);
+$g = RiffiGemini::body('SYSTEM', $turns, 1000, RiffiGemini::thinkingConfig('gemini-flash-latest', 'low'));
 check('gemini: system instruction', $g['system_instruction']['parts'][0]['text'] === 'SYSTEM');
 check('gemini: images as inline_data', $g['contents'][0]['parts'][1]['inline_data'] === ['mime_type' => 'image/jpeg', 'data' => 'AAA']);
 check('gemini: assistant turns become "model"', array_column($g['contents'], 'role') === ['user', 'model', 'user']);
-check('gemini: output limit', $g['generationConfig']['maxOutputTokens'] === 1000);
-check('gemini: parses text and skips thoughts', RiffiGemini::parse(['candidates' => [['content' => ['parts' => [['text' => 'hmm', 'thought' => true], ['text' => '<a/>']]], 'finishReason' => 'STOP']]]) === ['<a/>', 'end']);
-check('gemini: MAX_TOKENS', RiffiGemini::parse(['candidates' => [['content' => ['parts' => [['text' => 'x']]], 'finishReason' => 'MAX_TOKENS']]])[1] === 'max_tokens');
-check('gemini: safety stop is a refusal', RiffiGemini::parse(['candidates' => [['finishReason' => 'SAFETY']]])[1] === 'refusal');
-check('gemini: blocked prompt is a refusal', RiffiGemini::parse(['promptFeedback' => ['blockReason' => 'OTHER']])[1] === 'refusal');
+check('gemini: JSON output, limit, low thinking', $g['generationConfig']['maxOutputTokens'] === 1000 && $g['generationConfig']['responseMimeType'] === 'application/json' && $g['generationConfig']['thinkingConfig'] === ['thinkingLevel' => 'low']);
+check('gemini 2.5 thinks by budget', RiffiGemini::thinkingConfig('gemini-2.5-flash', 'low') === ['thinkingBudget' => 512]);
+check('gemini: no thinking setting when off', RiffiGemini::thinkingConfig('gemini-flash-latest', '') === null);
+[$txt, $fin, $blk] = RiffiGemini::absorb(['candidates' => [['content' => ['parts' => [['text' => 'hmm', 'thought' => true], ['text' => '{"a"']]]]]], '', '', false);
+[$txt, $fin, $blk] = RiffiGemini::absorb(['candidates' => [['content' => ['parts' => [['text' => ':1}']]], 'finishReason' => 'STOP']]], $txt, $fin, $blk);
+check('gemini: joins streamed chunks and skips thoughts', $txt === '{"a":1}' && RiffiGemini::stopFor($fin, $blk) === 'end');
+check('gemini: MAX_TOKENS', RiffiGemini::stopFor('MAX_TOKENS', false) === 'max_tokens');
+check('gemini: safety stop is a refusal', RiffiGemini::stopFor('SAFETY', false) === 'refusal');
+check('gemini: blocked prompt is a refusal', RiffiGemini::absorb(['promptFeedback' => ['blockReason' => 'OTHER']], '', '', false)[2] === true);
 
 // Claude adapter
-$c = RiffiClaude::body('SYSTEM', $turns, 'claude-sonnet-5-5', 2000, 'high');
+$c = RiffiClaude::body('SYSTEM', $turns, 'claude-sonnet-5-5', 2000, 'medium');
 check('claude: images as base64 sources', $c['messages'][0]['content'][1]['source'] === ['type' => 'base64', 'media_type' => 'image/jpeg', 'data' => 'AAA']);
 check('claude: roles', array_column($c['messages'], 'role') === ['user', 'assistant', 'user']);
-check('claude: system, model, effort', $c['system'] === 'SYSTEM' && $c['model'] === 'claude-sonnet-5-5' && $c['output_config']['effort'] === 'high');
+check('claude: system, model, effort', $c['system'] === 'SYSTEM' && $c['model'] === 'claude-sonnet-5-5' && $c['output_config']['effort'] === 'medium');
 
 // Provider choice
 $pc = riffi_default_config();
