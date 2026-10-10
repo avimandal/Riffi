@@ -1,4 +1,5 @@
 import workletUrl from './capture.worklet.js?url';
+import { micStarted, micStopped, micWillStart } from './session';
 
 export type FramesHandler = (samples: Float32Array, contextTimeSec: number) => void;
 
@@ -23,6 +24,8 @@ export class MicInput {
   private node: AudioWorkletNode | null = null;
   private sink: GainNode | null = null;
   private handlers = new Set<FramesHandler>();
+  /** Holding the audio session in 'play-and-record' (see ./session). */
+  private holdsSession = false;
 
   constructor(
     private readonly ctx: AudioContext,
@@ -46,6 +49,11 @@ export class MicInput {
     if (this.stream) return;
     if (!window.isSecureContext) throw new MicError('Needs HTTPS', 'insecure');
     if (!navigator.mediaDevices?.getUserMedia) throw new MicError('No microphone support', 'unsupported');
+    // iOS: switch to play-and-record before the mic opens (keeps sound on the loudspeaker, through the silent switch).
+    if (!this.holdsSession) {
+      micWillStart();
+      this.holdsSession = true;
+    }
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -56,6 +64,7 @@ export class MicInput {
         },
       });
     } catch (err) {
+      this.releaseSession();
       const name = (err as DOMException)?.name;
       if (name === 'NotAllowedError' || name === 'SecurityError') throw new MicError('Mic permission denied', 'denied');
       if (name === 'NotFoundError' || name === 'OverconstrainedError') throw new MicError('No microphone found', 'notfound');
@@ -65,6 +74,7 @@ export class MicInput {
       await this.ctx.audioWorklet.addModule(workletUrl);
       loadedContexts.add(this.ctx);
     }
+    micStarted();
     this.source = this.ctx.createMediaStreamSource(this.stream);
     this.node = new AudioWorkletNode(this.ctx, 'riffi-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
     this.node.port.onmessage = (ev: MessageEvent<{ samples: Float32Array; frame: number }>) => {
@@ -89,5 +99,12 @@ export class MicInput {
     this.source = null;
     this.node = null;
     this.sink = null;
+    this.releaseSession();
+  }
+
+  private releaseSession() {
+    if (!this.holdsSession) return;
+    this.holdsSession = false;
+    micStopped();
   }
 }

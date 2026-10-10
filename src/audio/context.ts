@@ -1,3 +1,5 @@
+import { prepareForPlayback } from './session';
+
 /** One shared AudioContext, so the metronome and the mic share a clock. */
 let ctx: AudioContext | null = null;
 
@@ -10,8 +12,12 @@ export function getAudioContext(): AudioContext {
   return ctx;
 }
 
-/** Must be called from a tap/click (browsers block audio until a gesture). */
+/**
+ * Must be called from a tap/click (browsers block audio until a gesture). Also
+ * makes sure iPhones play through the silent switch (see ./session).
+ */
 export async function resumeAudio(): Promise<AudioContext> {
+  prepareForPlayback();
   const c = getAudioContext();
   if (c.state !== 'running') await c.resume();
   return c;

@@ -1,9 +1,11 @@
 import { getAudioContext } from './context';
+import { prepareForPlayback } from './session';
 import { midiToHz } from '../engines/types';
 
 /** A short soft tone so kids can hear the note they've picked while fixing the music. */
 export function playTone(midi: number, durationS = 0.5) {
   try {
+    prepareForPlayback();
     const ctx = getAudioContext();
     void ctx.resume();
     const osc = ctx.createOscillator();
