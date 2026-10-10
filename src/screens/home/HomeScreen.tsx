@@ -6,6 +6,7 @@ import { Link, navigate } from '../../app/router';
 import { Avatar } from '../../components/Avatar';
 import { GoalRing } from '../../components/GoalRing';
 import { Icon } from '../../components/Icon';
+import { InstallPrompt } from '../../components/InstallPrompt';
 import { Modal } from '../../components/Modal';
 import { db } from '../../data/db';
 import { deletePiece } from '../../data/repo';
@@ -40,6 +41,8 @@ export function HomeScreen() {
           <h1 style={{ margin: 0 }}>{greeting(profile.name)}</h1>
         </div>
       </header>
+
+      <InstallPrompt />
 
       <section className="home-stats" aria-label={t.progress.title}>
         <div className="card stat-card" aria-label={t.home.streakLabel(streak)}>

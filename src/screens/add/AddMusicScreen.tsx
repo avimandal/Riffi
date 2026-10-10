@@ -241,7 +241,7 @@ export default function AddMusicScreen() {
       )}
 
       <section className="card flat" style={{ marginTop: 24 }}>
-        <h3>{t.add.openFile}</h3>
+        <h2>{t.add.openFile}</h2>
         <p className="muted">{t.add.openFileHelp}</p>
         <button className="btn" onClick={() => file.current?.click()}>
           <Icon name="upload_file" /> {t.add.openFile}

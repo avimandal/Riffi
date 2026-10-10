@@ -158,7 +158,8 @@ export default function ResultsScreen({ id }: { id: string }) {
       <section className="card results-hero" aria-live="polite">
         {scored ? (
           <>
-            <div className="big-score" aria-label={`${t.results.score}: ${session.score} ${t.results.outOf}`}>
+            <div className="big-score">
+              <span className="sr-only">{`${t.results.score}: ${session.score} ${t.results.outOf}`}</span>
               <span aria-hidden>
                 <CountUp value={session.score!} />
               </span>

@@ -43,7 +43,8 @@ test('create a kid, import music, practise with the fake mic, see results saved'
   await page.getByTestId('start-stop').click();
 
   // Results are shown and saved.
-  await expect(page.getByText('out of 100')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/^Score: \d+ out of 100$/)).toBeAttached({ timeout: 20_000 });
+  await expect(page.getByRole('heading', { name: 'Things to try next' })).toBeVisible();
   // A first run earns the "First song" badge (or similar): close any badge pop-ups.
   const badge = page.getByRole('dialog', { name: 'New badge!' });
   while (await badge.isVisible().catch(() => false)) await badge.getByRole('button', { name: 'OK' }).click();

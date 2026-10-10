@@ -334,7 +334,7 @@ a {
   flex-wrap: wrap;
 }
 .segmented .btn {
-  min-height: 48px;
+  min-height: var(--tap);
   background: transparent;
   padding: 0 var(--space-4);
 }
@@ -564,4 +564,8 @@ input[type='range'] {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+.sheet-host:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }

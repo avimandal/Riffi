@@ -25,6 +25,7 @@ home
 image
 info
 insights
+install_mobile
 key
 keyboard_double_arrow_down
 keyboard_double_arrow_up

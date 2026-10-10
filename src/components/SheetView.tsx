@@ -132,6 +132,17 @@ export const SheetView = forwardRef<SheetHandle, Props>(function SheetView(
     placeCursor(cursorAt.current);
   }, [version, marks, selected, placeCursor]);
 
+  // Keyboard: arrow keys move the selection from note to note.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!onTapNote || (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft')) return;
+    const order = [...score.notes].sort((a, b) => a.measureIndex - b.measureIndex || a.startQ - b.startQ || (a.midi ?? 0) - (b.midi ?? 0)).map((n) => n.xmlIndex);
+    if (order.length === 0) return;
+    e.preventDefault();
+    const at = selected === null ? -1 : order.indexOf(selected);
+    const next = e.key === 'ArrowRight' ? Math.min(order.length - 1, at + 1) : Math.max(0, at - 1);
+    onTapNote(order[next]);
+  };
+
   const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!onTapNote || !renderer.current || !host.current) return;
     const h = host.current.getBoundingClientRect();
@@ -146,7 +157,9 @@ export const SheetView = forwardRef<SheetHandle, Props>(function SheetView(
       style={style}
       role="region"
       aria-label={label}
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={onKeyDown}
       data-testid="sheet"
       data-rendered={version > 0 ? 'true' : 'false'}
     >

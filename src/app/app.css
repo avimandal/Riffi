@@ -22,7 +22,8 @@
   border: 0;
   font: inherit;
   font-weight: 650;
-  min-height: 48px;
+  min-height: var(--tap);
+  padding: 0 16px;
   cursor: pointer;
   color: var(--text);
 }
@@ -707,7 +708,9 @@
   color: #fff;
 }
 .cal-day.future {
-  opacity: 0.35;
+  background: transparent;
+  border: 2px dashed var(--border);
+  color: var(--text-muted);
 }
 .cal-day.today {
   outline: 3px solid var(--primary);
@@ -729,10 +732,11 @@
   padding: 12px;
   border-radius: var(--radius-sm);
   background: var(--surface-2);
-  opacity: 0.75;
+}
+.badge:not(.earned) .badge-medal {
+  color: var(--text-muted);
 }
 .badge.earned {
-  opacity: 1;
   background: var(--close-bg);
 }
 .badge-medal {
@@ -773,4 +777,12 @@
 .tabs [aria-selected='true'] {
   background: var(--primary);
   color: var(--on-primary);
+}
+
+.install-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
 }

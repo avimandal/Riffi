@@ -1,0 +1,73 @@
+name: Deploy
+
+# Manual only: Actions → Deploy → Run workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI must pass first
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Build and upload (FTPS)
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build
+        run: npm run build
+        env:
+          VITE_BASE_PATH: /
+
+      - name: Assemble upload folder
+        run: |
+          mkdir -p upload/api
+          cp -R dist/. upload/
+          cp api/omr.php api/.htaccess api/.user.ini api/config.sample.php upload/api/
+          # Belt and braces: the real config must never be uploaded.
+          rm -f upload/api/config.php upload/riffi-config.php
+          test ! -e upload/api/config.php
+          find upload -maxdepth 2 | sort
+
+      - name: Work out the server folder
+        env:
+          FTP_SERVER_DIR: ${{ secrets.FTP_SERVER_DIR }}
+        run: |
+          dir="${FTP_SERVER_DIR:-./}"
+          echo "SERVER_DIR=${dir%/}/" >> "$GITHUB_ENV"
+
+      - name: Upload over FTPS
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          local-dir: ./upload/
+          server-dir: ${{ env.SERVER_DIR }}
+          # Only files this action uploaded before are ever replaced or removed.
+          # api/config.php is never uploaded, so it is never overwritten or deleted.
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/api/config.php
+            api/config.php
+            **/riffi-config.php
+          dangerous-clean-slate: false
+          log-level: standard
