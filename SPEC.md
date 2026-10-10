@@ -68,7 +68,8 @@ type NoteEvent = {
 ### Server: `api/omr.php`
 - Accepts `POST` multipart: `pages[]` (images, in order), `instrument`.
 - Sends pages to the Claude API (vision) with a prompt that returns **MusicXML 3.1 partwise** only: title, clefs, key and time signatures, tempo marking if present, notes, rests, ties, dots, accidentals, repeats, both staves for piano. Ignore lyrics, fingering and chord symbols.
-- Config in `api/config.php` **outside the web root if the host allows**, otherwise protected by `.htaccess`: `ANTHROPIC_API_KEY`, `MODEL` (default `claude-sonnet-5-5`), `MAX_PAGES` (8), `MAX_BYTES_PER_PAGE` (3 MB), allowed origin.
+- **Swappable AI provider.** Support both Google Gemini (free tier via Google AI Studio) and the Claude API behind one small adapter interface, chosen by `PROVIDER` in config (`gemini` default, `claude` alternative). Same prompt and validation for both. Handle Gemini free-tier rate limits (HTTP 429) with a friendly "Riffi's music reader is busy, try again in a minute" message.
+- Config in `api/config.php` **outside the web root if the host allows**, otherwise protected by `.htaccess`: `PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL` (current free-tier Flash model), `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` (default `claude-sonnet-5-5`), `MAX_PAGES` (8), `MAX_BYTES_PER_PAGE` (3 MB), allowed origin.
 - Validate the returned XML (parseable, has at least one note). On failure retry once with the parser error included, then return a clear error.
 - Basic abuse protection: per-IP rate limit (file-based, e.g. 20 scans per hour), CORS limited to the app origin.
 - **Do not store images or results on the server.** Process and discard.
@@ -183,7 +184,7 @@ Keep all scoring in pure, unit-tested functions (`src/scoring/`), with tolerance
 ## 13. Privacy and safety (kids' app)
 
 - **Audio never leaves the device.** No recordings are stored by default; "play then score" recordings are deleted after analysis.
-- Sheet photos go only to the OMR endpoint and are not stored server-side.
+- Sheet photos go only to the OMR endpoint and are not stored server-side. On Gemini's free tier, Google may use submitted images to improve its models; the privacy page must say so, and the capture screen reminds kids to photograph only the music (no faces).
 - No analytics, no ads, no third-party trackers, no external fonts or CDNs at runtime.
 - A plain-language privacy page in the app, written to suit the Australian Privacy Act.
 
