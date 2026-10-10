@@ -34,7 +34,7 @@ export default defineConfig(({ mode }) => {
       VitePWA({
         registerType: 'prompt',
         injectRegister: false,
-        includeAssets: ['icons/*.png', 'icons/*.svg', 'fonts/*.woff2'],
+        includeAssets: ['app-icons/*.png', 'app-icons/*.svg', 'fonts/*.woff2'],
         manifest: {
           name: 'Riffi – music practice',
           short_name: 'Riffi',
@@ -48,9 +48,9 @@ export default defineConfig(({ mode }) => {
           theme_color: '#6C4DF5',
           categories: ['education', 'music', 'kids'],
           icons: [
-            { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-            { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-            { src: 'icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+            { src: 'app-icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+            { src: 'app-icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+            { src: 'app-icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
           ],
         },
         workbox: {

@@ -40,12 +40,12 @@ The microphone needs a secure context. `localhost` counts as secure. To test on 
 To try sheet reading locally, run the PHP endpoint with a config file and point the app at it:
 
 ```bash
-cp api/config.sample.php api/config.php     # add your ANTHROPIC_API_KEY, set ALLOWED_ORIGIN=http://localhost:5173
+cp api/config.sample.php api/config.php     # add GEMINI_API_KEY (or PROVIDER=claude + ANTHROPIC_API_KEY), set ALLOWED_ORIGIN=http://localhost:5173
 php -S 127.0.0.1:8080 -t .                   # serves /api/omr.php
 VITE_OMR_ENDPOINT=http://127.0.0.1:8080/api/omr.php npm run dev
 ```
 
-No API key? Use **Add music → Open a music file** with any `.musicxml` file (there are some in `tests/fixtures/musicxml/`).
+No API key? Use **Add music → Open a music file** with any `.mxl`, `.musicxml` or `.xml` file (MuseScore's default export is `.mxl`; there are samples in `tests/fixtures/musicxml/`).
 
 ### Scripts
 
@@ -59,7 +59,7 @@ No API key? Use **Add music → Open a music file** with any `.musicxml` file (t
 | `npm run e2e` | Playwright smoke test (builds, serves and drives the app with a fake microphone) |
 | `npm run php:lint` | `php -l` on the API |
 | `node scripts/build-icons.mjs` | Rebuild the self-hosted icon font subset after adding a new icon |
-| `node scripts/render-icons.mjs` | Re-render the PNG app icons from `public/icons/favicon.svg` |
+| `node scripts/render-icons.mjs` | Re-render the PNG app icons from `public/app-icons/favicon.svg` |
 
 ### Build-time settings
 
@@ -74,7 +74,7 @@ No API key? Use **Add music → Open a music file** with any `.musicxml` file (t
 
 ```
 api/                 omr.php (sheet reading), config.sample.php, .htaccess, .user.ini
-public/              .htaccess (SPA fallback, MIME types), icons, fonts (icon subset), robots.txt
+public/              .htaccess (SPA fallback, MIME types, cache headers), app-icons, fonts (icon subset), robots.txt
                      models/basic-pitch/ is copied from node_modules on install (not committed)
 src/
   app/               App shell, router, state, theme and styles
@@ -92,7 +92,7 @@ tests/
   unit/              Vitest: scoring, follower, MusicXML, engines (synthetic audio), data, editor, copy rules
   fixtures/          MusicXML fixtures, synthetic audio generators, NoteEvent streams
   e2e/               Playwright smoke test
-  php/               PHP unit tests and an integration test against a mock streaming API
+  php/               PHP unit tests and integration tests against fake Gemini and Claude APIs
 ```
 
 ---
@@ -102,16 +102,16 @@ tests/
 ```bash
 npm test                     # ~85 unit/engine tests (about 25 s; the piano model runs on the CPU)
 npm run e2e                  # Playwright (needs Chromium: npx playwright install chromium)
-php tests/php/unit.php       # PHP helpers
-bash tests/php/integration.sh  # PHP endpoint end to end against a mock streaming API
+php tests/php/unit.php       # PHP helpers and both provider adapters
+bash tests/php/integration.sh  # PHP endpoint end to end against fake Gemini and Claude APIs
 ```
 
 What's covered (SPEC §15):
 
 - **Scoring and follower** against synthetic `NoteEvent` streams: perfect run, a skipped note, extra notes, late notes, a player who slows down, octave-off singing, partial piano chords, wrong notes landing on the right bars, issues and positives.
 - **Engine fixtures:** generated audio (harmonic tones with vibrato, sung-like glides, repeated notes, piano-like chords, with and without metronome clicks mixed in) is run through the real mono engine and the real Basic Pitch model. The acceptance checks from SPEC §17 that can be automated run here too: a correct performance with vibrato and clicks scores 90+, clicks alone produce no notes, wrong notes are flagged on the right bars, and singing an octave low scores normally.
-- **MusicXML:** fixtures with repeats and voltas, ties, two piano staves with chords, key and time changes, and a pickup bar.
-- **E2E:** create a profile, import a fixture MusicXML file (bypassing OMR), tap-fix a note, practise with a fake microphone stream, see the results saved on Home and My progress. Plus the parent gate and the privacy page.
+- **MusicXML:** fixtures with repeats and voltas, ties, two piano staves with chords, key and time changes, and a pickup bar; `.mxl` unzipping.
+- **E2E:** create a profile, import a compressed `.mxl` fixture (bypassing OMR), tap-fix a note, practise with a fake microphone stream, see the results saved on Home and My progress. Plus the parent gate and the privacy page.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, lint, unit tests, build, the PHP tests and the Playwright test on every push and pull request.
 
@@ -168,7 +168,23 @@ HTTPS is mandatory: browsers block the microphone and camera on plain HTTP.
 
 ### 3. Upload the API config
 
-Copy `api/config.sample.php`, fill in `ANTHROPIC_API_KEY` and check `ALLOWED_ORIGIN` is `https://riffi.avimandal.com`.
+Copy `api/config.sample.php`, choose the AI provider and fill in its key, and check `ALLOWED_ORIGIN` is `https://riffi.avimandal.com`.
+
+| Key | Default | Notes |
+|---|---|---|
+| `PROVIDER` | `gemini` | `gemini` (Google Gemini) or `claude` (Anthropic Claude) |
+| `GEMINI_API_KEY` | | Free key from [Google AI Studio](https://aistudio.google.com/) → Get API key |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Google's alias for its current Flash model, which has a free tier. Pin an exact model ID if you'd rather not move to new Flash versions automatically. |
+| `ANTHROPIC_API_KEY` | | Only needed for `PROVIDER => 'claude'` ([console.anthropic.com](https://console.anthropic.com/)) |
+| `CLAUDE_MODEL` | `claude-sonnet-5-5` | |
+| `MAX_PAGES` / `MAX_BYTES_PER_PAGE` | 8 / 3 MB | |
+| `RATE_LIMIT_PER_HOUR` | 20 | Scans per IP per hour (Riffi's own limit) |
+
+Both providers get the same prompt, the same validation and the same single retry. If Gemini's free tier runs out of quota (HTTP 429) or either provider is overloaded, kids see "Riffi's music reader is busy, try again in a minute." The free tier has per-minute and per-day request limits, so a busy household may occasionally hit them; switching `PROVIDER` to `claude` (paid) avoids that.
+
+**Privacy on the Gemini free tier:** Google may use what's sent on the free tier (here, the sheet-music photos) to improve its products, and human reviewers may see it. The in-app privacy page says so, and the Add music screen reminds kids to photograph only the music. If you'd rather avoid this, use a paid Gemini API key (billing enabled) or `PROVIDER => 'claude'`, and update the privacy text in `src/i18n/en-AU.ts`.
+
+Where to put the file:
 
 - **Best:** put it **outside the web root**, one level above the subdomain's folder, named `riffi-config.php` (e.g. `/home/<you>/riffi-config.php`). `omr.php` looks there first. (You may need the control panel's File Manager for this, since the FTP account is scoped to the site root.)
 - **Otherwise:** upload it as `api/config.php` with FTP. `api/.htaccess` blocks it (and everything except `omr.php`) from the web.
@@ -191,6 +207,31 @@ The rate limiter writes tiny counter files to the system temp folder by default.
 ### 5. First run on each device
 
 Open https://riffi.avimandal.com, add a kid, add some music, and press **Start**. The first time, Riffi offers a **10-second sound check**: it measures the room's noise and plays a few clicks to measure the device's audio latency. Do it with the volume up and headphones off. You can redo it any time in **Parents → Settings → Timing check**. Then install it to the home screen (Chrome/Edge/Android: the Install button on Home; iPad/iPhone: Share → Add to Home Screen).
+
+### 6. Cloudflare
+
+The site is proxied through Cloudflare. `public/.htaccess` sends:
+
+| Files | `Cache-Control` |
+|---|---|
+| `index.html`, every app route (`/home`, `/practice/…`), `sw.js`, `manifest.webmanifest` | `no-cache, no-store, must-revalidate, max-age=0`, plus `CDN-Cache-Control: no-store` |
+| Hashed build files (`assets/*-<hash>.js/.css`, `workbox-<hash>.js`) | `public, max-age=31536000, immutable` |
+| Icons, icon font, piano model (same names across releases) | `public, max-age=3600, must-revalidate` |
+| `api/omr.php` | `no-store` |
+
+(Verified against a local Apache 2.4 with `mod_rewrite` and `mod_headers`.)
+
+**Do I need to purge Cloudflare after deploying? Normally, no.** Cloudflare doesn't cache HTML by default, and it honours `no-store` for `sw.js` and the manifest. Each deploy changes `index.html` and `sw.js`, and those point to new hashed file names that Cloudflare has never seen. So the next visit fetches the new shell, the service worker spots the change, and the app shows "A new version of Riffi is ready" (it never reloads by itself mid-practice).
+
+Check these Cloudflare settings once, or a purge *would* be needed after every deploy:
+
+- **Caching → Configuration → Browser Cache TTL:** set to **Respect Existing Headers**.
+- **No "Cache Everything" Cache Rule (or Page Rule)** matching the whole site. If you want one, add a bypass for `/`, `/index.html`, `/sw.js` and `/manifest.webmanifest`, or set its Edge TTL to "Use cache-control header if present".
+- **Speed → Optimization:** turn off **Rocket Loader** (it rewrites scripts and can break the service worker and audio worklet). Auto Minify is retired; if your plan still shows it, leave JavaScript minification off.
+
+After the first deploy, check with `curl -sI https://riffi.avimandal.com/sw.js | grep -i -E "cache-control|cf-cache-status"`. You want `no-store` and `cf-cache-status: DYNAMIC` or `BYPASS`, not `HIT`. If you ever see a stale app, **Caching → Configuration → Purge Everything** fixes it immediately, and is harmless.
+
+The app icons live in `app-icons/` rather than `icons/` because many Apache servers alias `/icons/` to Apache's own folder.
 
 ---
 
@@ -244,7 +285,7 @@ Metronome (Web Audio lookahead scheduler) → click times                       
                                                                      practice log (IndexedDB)
 ```
 
-- **Sheet reading:** photos are straightened, cropped and shrunk to ≤2000 px JPEGs (q 0.85) in the browser, then sent to `api/omr.php`, which streams them to the Claude API (default model `claude-sonnet-5-5`) and asks for MusicXML 3.1 partwise only. The result is validated (it must parse and contain notes). If it isn't valid, the endpoint retries once with the parser error, then gives up with a friendly message. Doubtful spots come back as warnings for the review screen. Nothing is stored on the server. The request opts in to the API's server-side refusal fallback (`fallbacks: "default"`), so a declined request is retried on a fallback model in the same call; set `USE_FALLBACKS` to `false` to turn that off.
+- **Sheet reading:** photos are straightened, cropped and shrunk to ≤2000 px JPEGs (q 0.85) in the browser, then sent to `api/omr.php`. The endpoint has one small adapter per AI provider behind the same interface: **Google Gemini** (`generateContent`, the default) or **Anthropic Claude** (Messages API, streamed). Both get the same prompt asking for MusicXML 3.1 partwise only. The result is validated (it must parse and contain notes). If it isn't valid, the endpoint retries once with the parser error, then gives up with a friendly message. Doubtful spots come back as warnings for the review screen. Nothing is stored on the server. With Claude, the request opts in to the API's server-side refusal fallback (`fallbacks: "default"`); set `USE_FALLBACKS` to `false` to turn that off. You can also open MusicXML files directly (`.mxl` zipped files are unpacked in the browser).
 - **Review:** the music is drawn with OpenSheetMusicDisplay next to the photo thumbnails. Tap a note (or use the arrow keys) to move it up or down, change its length, turn it into a rest, delete it, or add a note or rest after it. You can also change the key, time signature and title. "Looks good!" saves it.
 - **Metronome:** clicks are scheduled on the audio clock with a lookahead (the timer only wakes the scheduler). There's a one-bar count-in, an accent on beat 1, a short high woodblock click (mostly above 4 kHz), and a big bouncing dot that always shows.
 - **Ignoring the metronome**, in layers: exact click times are known, so analysis frames within ±35 ms of a click can't start or end notes; the mono engine band-limits to 60 Hz–3.5 kHz and drops pitches outside the instrument's range; the mic uses echo cancellation but no noise suppression or auto gain; and the app suggests headphones.
@@ -257,13 +298,14 @@ Metronome (Web Audio lookahead scheduler) → click times                       
 
 ## Known limits
 
-- **Photo reading is best on clear, printed, flat, well-lit pages.** Handwritten music is unlikely to read well. Always check the notes on the review screen; one wrong note affects every score after it.
+- **Photo reading is best on clear, printed, flat, well-lit pages.** The free Gemini tier has daily limits and may be busy at peak times. Handwritten music is unlikely to read well. Always check the notes on the review screen; one wrong note affects every score after it.
 - **Acoustic piano detection is the least precise of the three.** Dense or fast passages are scored more leniently, and timing windows are wider. On slower tablets Riffi scores piano after the run (play then score) instead of live.
 - **Tolerances will need tuning** after testing with real kids and instruments. That's expected, and it's why scoring config lives in one file.
 - Live piano listening runs up to about a second behind, so the piano cursor lags a little; the final score uses the complete recording.
 - Tempo is a single BPM per run. Tempo changes written mid-piece are not followed, but they don't break anything.
 - With repeats, a note that was played differently on each pass shows its trickiest result on the coloured sheet.
 - iPhone/iPad Safari has no vibration, so the "vibrate" metronome option only appears where it's supported (Android).
+- Sheet reading is tested against fake Gemini and Claude APIs; it hasn't been run against the real services from CI (no keys there).
 - Engine and scoring tests use synthetic audio. Real instruments, rooms and microphones vary, so the real-world acceptance checks in SPEC §17 (a phone's speaker at normal volume, a mid-range tablet with two-hand piano, installing on an iPad) still need doing on real devices.
 - Data is stored on one device only. Use **Parents → Backup** to move it. Clearing the browser's site data deletes it.
 
@@ -271,4 +313,4 @@ Metronome (Web Audio lookahead scheduler) → click times                       
 
 ## Privacy
 
-There's a plain-language privacy page in the app (written to suit the Australian Privacy Act). In short: audio never leaves the device and isn't recorded (play-then-score recordings are deleted after analysis); sheet photos go only to the reading endpoint and aren't stored; there are no analytics, ads, trackers or external fonts or scripts at runtime.
+There's a plain-language privacy page in the app (written to suit the Australian Privacy Act). In short: audio never leaves the device and isn't recorded (play-then-score recordings are deleted after analysis); sheet photos go only to the reading endpoint and aren't stored there (on Gemini's free tier Google may use them to improve its models, which the privacy page explains); there are no analytics, ads, trackers or external fonts or scripts at runtime.
