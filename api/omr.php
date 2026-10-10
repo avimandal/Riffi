@@ -674,7 +674,8 @@ function riffi_post_sse(string $provider, string $url, array $headers, array $bo
         CURLOPT_CONNECTTIMEOUT => 15,
         CURLOPT_TIMEOUT => max(5, (int) ceil($call->remaining())),
         CURLOPT_NOPROGRESS => false,
-        CURLOPT_XFERINFOFUNCTION => static fn () => $call->tick() ? 0 : 1,
+        // PROGRESSFUNCTION (not XFERINFOFUNCTION, which needs PHP 8.2) works on every supported PHP.
+        CURLOPT_PROGRESSFUNCTION => static fn () => $call->tick() ? 0 : 1,
         CURLOPT_WRITEFUNCTION => static function ($ch, string $chunk) use (&$buffer, &$errorBody, $onData): int {
             if ((int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE) >= 300) {
                 $errorBody .= $chunk;
