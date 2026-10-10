@@ -131,7 +131,7 @@ Add these in GitHub → **Settings** → **Secrets and variables** → **Actions
 
 | Secret | What to put in it |
 |---|---|
-| `FTP_SERVER` | FTP host name, e.g. `ftp.avimandal.com` |
+| `FTP_SERVER` | FTP host name, with no `ftp://` and no port. **It must not go through Cloudflare's proxy** (see below): use your host's server name from the control panel (e.g. `serverNN.yourhost.com`), or a DNS record like `ftp.avimandal.com` set to **DNS only** (grey cloud). |
 | `FTP_USERNAME` | The FTP account (already scoped to the site root of riffi.avimandal.com) |
 | `FTP_PASSWORD` | Its password |
 | `FTP_SERVER_DIR` | Folder to upload into, relative to the FTP account's root. Because the account is already scoped to the site root, this is usually `./` (a trailing slash is added if you leave it off). |
@@ -143,7 +143,19 @@ Add these in GitHub → **Settings** → **Secrets and variables** → **Actions
 - `config.php` is also listed in the action's `exclude` patterns.
 - The action only ever replaces or removes files that it uploaded itself (it keeps a `.ftp-deploy-sync-state.json` on the server). It has never uploaded `api/config.php`, so it never overwrites or deletes it. `dangerous-clean-slate` is off.
 
-If your host only offers implicit FTPS (port 990), change `protocol: ftps` to `protocol: ftps-legacy` and `port: 21` to `port: 990` in `deploy.yml`.
+Optional **repository variables** (Settings → Secrets and variables → Actions → **Variables** tab), only if the defaults don't suit your host:
+
+| Variable | Default | When to set it |
+|---|---|---|
+| `FTP_PROTOCOL` | `ftps` (explicit TLS) | `ftps-legacy` if your host only offers implicit FTPS |
+| `FTP_PORT` | `21` (`990` for `ftps-legacy`) | Your host uses a non-standard FTP port |
+| `FTP_TLS_SECURITY` | `strict` | `loose` if the server's certificate is for a different name than `FTP_SERVER` (still encrypted, but the name isn't checked) |
+
+### When the upload can't connect
+
+Before uploading, the **Check the FTP connection** step (`scripts/ftp-preflight.sh`) tests DNS, the port, the FTP greeting, TLS, the login and the upload folder. It stops with a plain-English error that names the problem: a Cloudflare-proxied host name, a closed or firewalled port, no FTPS, a bad certificate, a rejected login, or a missing folder. Secrets stay masked in the log (the host name shows as `***`), but the resolved IP addresses, port and FTP reply codes are shown.
+
+**Cloudflare and FTP:** when `riffi.avimandal.com` (or `avimandal.com`) is proxied by Cloudflare (orange cloud), its DNS points at Cloudflare's servers, and Cloudflare only passes web traffic. FTP to that name times out. Use a name that resolves to your hosting server's real IP instead (DNS only / grey cloud, or the host's own server name).
 
 ---
 

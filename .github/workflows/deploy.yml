@@ -22,8 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -50,14 +50,32 @@ jobs:
           dir="${FTP_SERVER_DIR:-./}"
           echo "SERVER_DIR=${dir%/}/" >> "$GITHUB_ENV"
 
+      # Checks DNS (Cloudflare proxy?), the port, the FTP greeting, TLS, the
+      # login and the folder, and says in plain words what's wrong. Secrets
+      # stay masked; IPs, ports and FTP reply codes are shown.
+      - name: Check the FTP connection
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_SERVER_DIR: ${{ env.SERVER_DIR }}
+          FTP_PROTOCOL: ${{ vars.FTP_PROTOCOL || 'ftps' }}
+          FTP_PORT: ${{ vars.FTP_PORT || '' }}
+          FTP_TLS_SECURITY: ${{ vars.FTP_TLS_SECURITY || 'strict' }}
+        run: bash scripts/ftp-preflight.sh
+
       - name: Upload over FTPS
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ftps
-          port: 21
+          # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
+          # FTP_PROTOCOL (ftps | ftps-legacy), FTP_PORT, FTP_TLS_SECURITY (strict | loose).
+          protocol: ${{ vars.FTP_PROTOCOL || 'ftps' }}
+          port: ${{ vars.FTP_PORT || (vars.FTP_PROTOCOL == 'ftps-legacy' && '990' || '21') }}
+          security: ${{ vars.FTP_TLS_SECURITY || 'strict' }}
+          timeout: 60000
           local-dir: ./upload/
           server-dir: ${{ env.SERVER_DIR }}
           # Only files this action uploaded before are ever replaced or removed.
