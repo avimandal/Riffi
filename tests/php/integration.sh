@@ -43,11 +43,10 @@ start_app claude claude claude-sonnet-5-5
 php -S 127.0.0.1:8791 -t tests/php >/dev/null 2>&1 &
 sleep 1
 
-python3 -c "from PIL import Image; Image.open('tests/fixtures/sheets/hermans-hornpipe.webp').convert('RGB').save('$TMP/page.jpg', quality=85)"
 
 fail() { echo "FAIL: $1"; exit 1; }
 scan() { # port → body, then status on the last line
-  curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F 'page=1' -F 'pages=2' -F "pages[]=@$TMP/page.jpg;type=image/jpeg" "http://127.0.0.1:$1/omr.php"
+  curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F 'page=1' -F 'pages=2' -F "pages[]=@tests/fixtures/sheets/hermans-hornpipe.webp;type=image/webp" "http://127.0.0.1:$1/omr.php"
 }
 last_line() { echo "$1" | grep -v '^[0-9]*$' | grep -v '"type":"ping"' | tail -1; }
 field() { php -r '$j=json_decode(stream_get_contents(STDIN),true); $k=explode(".",$argv[1]); foreach($k as $x){$j=$j[$x]??null;} echo is_scalar($j)?$j:json_encode($j);' "$1"; }
@@ -118,7 +117,7 @@ OUT=$(curl -s -N "http://127.0.0.1:$PORT_missing/omr.php?check=1")
 echo "  ok   self-check: reports model, a test request and streaming pings; spots a missing model"
 
 # --- Request guards ---
-CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://evil.example.com' -F 'instrument=violin' -F "pages[]=@$TMP/page.jpg" http://127.0.0.1:$PORT_fast/omr.php)
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://evil.example.com' -F 'instrument=violin' -F "pages[]=@tests/fixtures/sheets/hermans-hornpipe.webp" http://127.0.0.1:$PORT_fast/omr.php)
 [ "$CODE" = "403" ] || fail "expected 403 for a foreign origin, got $CODE"
 echo "hello" > "$TMP/note.txt"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -F 'instrument=violin' -F "pages[]=@$TMP/note.txt" http://127.0.0.1:$PORT_fast/omr.php)
