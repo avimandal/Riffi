@@ -215,7 +215,7 @@
   margin: 16px 0;
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
 }
 .page-card {
   padding: 12px;
@@ -259,13 +259,318 @@
   justify-content: center;
   font-weight: 800;
 }
+/* Actions under each page: always one line. The buttons share the width and
+   shrink (gap, icon size) on narrow cards instead of wrapping. */
+.page-card {
+  container-type: inline-size;
+}
 .page-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
+  gap: clamp(2px, 1.5cqi, 8px);
 }
 .page-actions .btn {
-  min-width: 56px;
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  max-width: var(--tap);
+  min-height: clamp(40px, 15cqi, var(--tap));
+  padding: 0;
+  margin: 0 auto;
+}
+.page-actions .btn .icon {
+  font-size: clamp(20px, 8cqi, 24px);
+}
+.page-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: none;
+  background: #ffffff;
+  color: #d32030;
+  box-shadow: 0 2px 8px rgba(20, 10, 40, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform var(--speed) ease;
+}
+.page-delete:hover {
+  transform: scale(1.08);
+}
+.page-delete:active {
+  transform: scale(0.94);
+}
+.page-delete:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.remove-confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+}
+.remove-confirm img {
+  max-height: 180px;
+  max-width: 100%;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.remove-confirm-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  width: 100%;
+}
+.remove-confirm-buttons .btn {
+  flex: 1 1 200px;
+}
+
+/* "Music for": one line that scrolls sideways if it must. */
+.scroll-row {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  --fade: 40px;
+}
+.scroll-row::-webkit-scrollbar {
+  display: none;
+}
+.scroll-row > * {
+  flex: none;
+  white-space: nowrap;
+  scroll-snap-align: start;
+}
+.scroll-row.more-right {
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--fade)), transparent);
+}
+.scroll-row.more-left {
+  mask-image: linear-gradient(to left, #000 calc(100% - var(--fade)), transparent);
+}
+.scroll-row.more-left.more-right {
+  mask-image: linear-gradient(to right, transparent, #000 var(--fade), #000 calc(100% - var(--fade)), transparent);
+}
+.segmented.chips-row {
+  display: flex;
+  width: fit-content;
+}
+
+/* The big upload box. */
+.dropzone {
+  position: relative;
+  margin-bottom: var(--space-4);
+  border: 4px dashed var(--primary);
+  border-radius: 32px;
+  background:
+    radial-gradient(circle at 15% 20%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 45%),
+    radial-gradient(circle at 85% 80%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 50%),
+    var(--surface);
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  text-align: center;
+  cursor: pointer;
+  transition: transform var(--speed) ease, background-color var(--speed) ease, border-color var(--speed) ease;
+}
+.dropzone:hover:not(.full) {
+  border-color: var(--accent);
+}
+.dropzone:has(.dropzone-main:focus-visible) {
+  outline: 4px solid var(--focus);
+  outline-offset: 4px;
+}
+.dropzone.full {
+  cursor: default;
+  border-style: dotted;
+  opacity: 0.75;
+}
+.dropzone-main {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  cursor: inherit;
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+.dropzone-main:focus-visible {
+  outline: none;
+}
+.dropzone-art {
+  position: relative;
+  width: 112px;
+  height: 112px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), #ffb547);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 40%, transparent);
+  transition: transform var(--speed) ease;
+}
+.dropzone-camera.icon {
+  font-size: 60px;
+}
+.dropzone-note {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--on-primary);
+  border: 4px solid var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: note-wiggle 2.4s ease-in-out infinite;
+}
+.dropzone-note .icon {
+  font-size: 26px;
+}
+.dropzone-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.dropzone-title {
+  font-size: clamp(24px, 6vw, 32px);
+  font-weight: 800;
+  color: var(--primary);
+  line-height: 1.15;
+}
+.dropzone-help {
+  font-size: 17px;
+  color: var(--text-muted);
+  max-width: 34ch;
+}
+.dropzone-help .for-mouse {
+  display: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .dropzone-help .for-touch {
+    display: none;
+  }
+  .dropzone-help .for-mouse {
+    display: inline;
+  }
+}
+.dropzone:hover:not(.full) .dropzone-art,
+.dropzone-main:focus-visible .dropzone-art {
+  transform: rotate(-6deg) scale(1.05);
+}
+.dropzone:active:not(.full) {
+  transform: scale(0.98);
+}
+.dropzone-privacy {
+  margin: var(--space-3) auto 0;
+  max-width: 40ch;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  text-wrap: balance;
+}
+.dropzone-privacy .icon {
+  font-size: 18px;
+  vertical-align: -4px;
+  margin-right: 2px;
+}
+.dropzone-privacy a {
+  white-space: nowrap;
+  margin-left: 4px;
+}
+.dropzone.over {
+  border-style: solid;
+  border-color: var(--accent);
+  background-color: var(--surface-3);
+  animation: drop-bounce 0.7s ease-in-out infinite alternate;
+}
+.dropzone.over .dropzone-art {
+  transform: scale(1.12);
+}
+/* Compact: once there are pages, a slim "Add another page" bar. */
+.dropzone.compact {
+  padding: var(--space-3) var(--space-4);
+  border-width: 3px;
+  border-radius: var(--radius-lg);
+}
+.dropzone.compact .dropzone-main {
+  min-height: var(--tap-primary);
+  flex-direction: row;
+  gap: var(--space-4);
+}
+.dropzone.compact .dropzone-art {
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+.dropzone.compact .dropzone-camera.icon {
+  font-size: 30px;
+}
+.dropzone.compact .dropzone-note {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+  top: -6px;
+  right: -8px;
+}
+.dropzone.compact .dropzone-note .icon {
+  font-size: 16px;
+}
+.dropzone.compact .dropzone-title {
+  font-size: 22px;
+}
+.dropzone.compact .dropzone-privacy {
+  margin-top: var(--space-1);
+  font-size: 13px;
+}
+@keyframes drop-bounce {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  to {
+    transform: translateY(-6px) scale(1.015);
+  }
+}
+@keyframes note-wiggle {
+  0%,
+  100% {
+    transform: rotate(0) translateY(0);
+  }
+  50% {
+    transform: rotate(12deg) translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dropzone,
+  .dropzone-art,
+  .dropzone-note,
+  .page-delete {
+    animation: none !important;
+    transition: none !important;
+  }
+  .dropzone:hover:not(.full) .dropzone-art,
+  .dropzone-main:focus-visible .dropzone-art,
+  .dropzone.over .dropzone-art,
+  .dropzone:active:not(.full) {
+    transform: none;
+  }
 }
 .busy-card {
   margin-top: 15vh;
