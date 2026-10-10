@@ -2,15 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { INSTRUMENTS, UPLOAD_MAX_PAGES, type Instrument } from '../../config';
 import { t } from '../../i18n';
 import { useApp } from '../../app/state';
-import { Link, navigate } from '../../app/router';
+import { navigate } from '../../app/router';
 import { Icon } from '../../components/Icon';
 import { INSTRUMENT_ICON } from '../../components/instrumentIcons';
+import { Modal } from '../../components/Modal';
+import { ScrollRow } from '../../components/ScrollRow';
 import { newId } from '../../data/db';
 import { countPitchedNotes, parseMusicXml } from '../../sheet/musicxml';
 import { musicXmlFromFile } from '../../sheet/mxl';
 import { OmrError, readSheetMusic } from '../../sheet/omrClient';
 import { CropModal } from './CropModal';
 import { saveDraft } from './draft';
+import { UploadBox } from './UploadBox';
 import { renderPage, thumbnail, type PageDraft } from './imagePrep';
 
 type Busy = { label: string; note?: string } | null;
@@ -23,8 +26,7 @@ export default function AddMusicScreen() {
   const [error, setError] = useState<string | null>(null);
   const [cropping, setCropping] = useState<PageDraft | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
-  const camera = useRef<HTMLInputElement>(null);
-  const gallery = useRef<HTMLInputElement>(null);
+  const [removing, setRemoving] = useState<{ page: PageDraft; index: number } | null>(null);
   const file = useRef<HTMLInputElement>(null);
   const retake = useRef<HTMLInputElement>(null);
   const retakeId = useRef<string | null>(null);
@@ -34,12 +36,13 @@ export default function AddMusicScreen() {
   pagesRef.current = pages;
   useEffect(() => () => pagesRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl)), []);
 
-  const addFiles = (files: FileList | null) => {
-    if (!files) return;
+  const addFiles = (files: File[]) => {
+    if (files.length === 0) return;
     setError(null);
-    const imgs = [...files].filter((f) => f.type.startsWith('image/') || f.type === '');
+    const imgs = files.filter((f) => f.type.startsWith('image/') || f.type === '');
     const room = UPLOAD_MAX_PAGES - pages.length;
-    if (imgs.length > room) setError(t.add.tooMany(UPLOAD_MAX_PAGES));
+    if (imgs.length < files.length) setError(t.add.notImages(files.length - imgs.length));
+    else if (imgs.length > room) setError(t.add.tooMany(UPLOAD_MAX_PAGES));
     const added = imgs.slice(0, Math.max(0, room)).map((f) => ({ id: newId(), file: f, previewUrl: URL.createObjectURL(f), rotation: 0 as const }));
     setPages((ps) => [...ps, ...added]);
   };
@@ -141,28 +144,16 @@ export default function AddMusicScreen() {
         <span style={{ fontWeight: 600 }} id="for-label">
           {t.add.instrumentFor}
         </span>
-        <div className="segmented" role="group" aria-labelledby="for-label">
+        <ScrollRow className="segmented chips-row" labelledBy="for-label">
           {INSTRUMENTS.map((i) => (
             <button key={i} className="btn" aria-pressed={instrument === i} onClick={() => setInstrument(i)}>
               <Icon name={INSTRUMENT_ICON[i]} /> {t.instruments[i]}
             </button>
           ))}
-        </div>
+        </ScrollRow>
       </div>
 
-      <div className="row" style={{ marginBottom: 16 }}>
-        <button className="btn primary big" onClick={() => camera.current?.click()} disabled={pages.length >= UPLOAD_MAX_PAGES}>
-          <Icon name="photo_camera" filled /> {t.add.takePhoto}
-        </button>
-        <button className="btn big" onClick={() => gallery.current?.click()} disabled={pages.length >= UPLOAD_MAX_PAGES}>
-          <Icon name="photo_library" /> {t.add.fromGallery}
-        </button>
-      </div>
-      <p className="notice only-music" role="note">
-        <Icon name="photo_camera" /> <span>{t.add.onlyMusic}</span> <Link to="/privacy">{t.profiles.privacyLink}</Link>
-      </p>
-      <input ref={camera} type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => (addFiles(e.target.files), (e.target.value = ''))} />
-      <input ref={gallery} type="file" accept="image/*" multiple hidden onChange={(e) => (addFiles(e.target.files), (e.target.value = ''))} />
+      <UploadBox compact={pages.length > 0} full={pages.length >= UPLOAD_MAX_PAGES} onFiles={addFiles} />
       <input
         ref={retake}
         type="file"
@@ -206,6 +197,14 @@ export default function AddMusicScreen() {
                 >
                   <img src={p.previewUrl} alt={t.add.pageLabel(i + 1)} style={{ transform: `rotate(${p.rotation}deg)` }} draggable={false} />
                   <span className="page-num">{i + 1}</span>
+                  <button
+                    className="page-delete"
+                    aria-label={`${t.add.remove} ${i + 1}`}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() => setRemoving({ page: p, index: i })}
+                  >
+                    <Icon name="delete" filled />
+                  </button>
                 </div>
                 <div className="page-actions">
                   <button className="btn icon-only" aria-label={t.add.moveEarlier} onClick={() => move(i, i - 1)} disabled={i === 0}>
@@ -229,9 +228,6 @@ export default function AddMusicScreen() {
                     }}
                   >
                     <Icon name="replay" />
-                  </button>
-                  <button className="btn icon-only danger" aria-label={t.add.remove} onClick={() => remove(p.id)}>
-                    <Icon name="delete" />
                   </button>
                 </div>
               </li>
@@ -263,6 +259,28 @@ export default function AddMusicScreen() {
           }}
         />
       </section>
+
+      {removing && (
+        <Modal title={t.add.removeTitle} onClose={() => setRemoving(null)}>
+          <div className="remove-confirm">
+            <img src={removing.page.previewUrl} alt={t.add.pageLabel(removing.index + 1)} style={{ transform: `rotate(${removing.page.rotation}deg)` }} />
+            <div className="remove-confirm-buttons">
+              <button className="btn primary big" onClick={() => setRemoving(null)}>
+                <Icon name="favorite" filled /> {t.add.removeKeep}
+              </button>
+              <button
+                className="btn danger big"
+                onClick={() => {
+                  remove(removing.page.id);
+                  setRemoving(null);
+                }}
+              >
+                <Icon name="delete" filled /> {t.add.removeYes}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {cropping && (
         <CropModal
