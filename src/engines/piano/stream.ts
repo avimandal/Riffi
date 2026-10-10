@@ -27,7 +27,7 @@ export class BasicPitchStream {
   constructor(
     private readonly tf: typeof TF,
     private readonly model: TF.GraphModel,
-    private readonly stepFrames: number = PIANO_ENGINE.liveStepFrames,
+    public stepFrames: number = PIANO_ENGINE.liveStepFrames,
   ) {}
 
   append(samples: Float32Array) {
@@ -38,6 +38,10 @@ export class BasicPitchStream {
     }
     this.audio.set(samples, this.length);
     this.length += samples.length;
+  }
+
+  get framesDone(): number {
+    return this.nextFrame;
   }
 
   get audioSeconds(): number {

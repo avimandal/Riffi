@@ -1,6 +1,9 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { readFileSync } from 'node:fs';
+
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 function normaliseBase(raw: string | undefined): string {
   let base = (raw ?? '/').trim() || '/';
@@ -17,11 +20,14 @@ export default defineConfig(({ mode }) => {
     base,
     define: {
       __APP_BASE__: JSON.stringify(base),
+      __APP_VERSION__: JSON.stringify(pkg.version),
     },
     worker: { format: 'es' },
     build: {
       target: 'es2020',
       chunkSizeWarningLimit: 4000,
+      // AudioWorklet modules must be real files (some browsers refuse data: URLs).
+      assetsInlineLimit: (file: string) => (file.endsWith('.worklet.js') ? false : undefined),
     },
     plugins: [
       react(),

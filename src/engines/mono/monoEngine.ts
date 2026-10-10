@@ -193,6 +193,8 @@ export class MonoEngine implements ListeningEngine {
   private step(f: Frame) {
     const cfg = MONO_ENGINE;
     if (!Number.isFinite(f.midi)) {
+      // A quiet moment inside a note may be a re-attack of the same pitch.
+      if (this.current && this.current.dipT === null && f.rms < this.current.peakRms * cfg.reattackDip) this.current.dipT = f.t;
       this.gapMs += this.hopMs;
       this.candidate = [];
       if (this.current && this.gapMs >= cfg.gapMs) this.endCurrent();
@@ -217,10 +219,17 @@ export class MonoEngine implements ListeningEngine {
         cur.dipT = null;
         const ref = this.refPitch();
         if (Math.abs(f.midi - ref) * 100 <= cfg.changeCents) {
+          // The new note starts where the sound came back (which may be inside a click mask).
+          let startT = f.t;
+          for (let i = this.maskedRun.length - 1; i >= 0; i--) {
+            const mf = this.maskedRun[i];
+            if (mf.t > splitAt && Number.isFinite(mf.midi) && Math.abs(mf.midi - f.midi) * 100 <= cfg.changeCents) startT = mf.t;
+            else break;
+          }
           this.endCurrent(splitAt);
           this.candidate = [f];
-          this.candidateStart = splitAt;
-          this.promoteCandidate(splitAt);
+          this.candidateStart = startT;
+          this.promoteCandidate(startT);
           return;
         }
       }

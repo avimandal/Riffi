@@ -18,6 +18,11 @@ export interface ListeningEngine {
   notes(): NoteEvent[];
   /** Flush and return the final note list. */
   finish(): Promise<NoteEvent[]> | NoteEvent[];
+  /** Notes safe to follow live (won't be merged away later). Defaults to notes(). */
+  settledNotes?(): NoteEvent[];
+  setClickTimes?(times: number[]): void;
+  /** Live input level 0..1 for the meter. */
+  level?: number;
   reset(): void;
 }
 
