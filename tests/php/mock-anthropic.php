@@ -1,6 +1,6 @@
 <?php
 // A stand-in for the Messages API that streams server-sent events.
-// First call: broken XML (to exercise the retry). Second call: valid MusicXML.
+// First call: invalid notation (to exercise the retry). Second call: a small valid score.
 $state = sys_get_temp_dir() . '/riffi-mock-count';
 $n = (int) @file_get_contents($state) + 1;
 file_put_contents($state, (string) $n);
@@ -16,8 +16,13 @@ file_put_contents(sys_get_temp_dir() . '/riffi-mock-last.json', json_encode([
 
 header('Content-Type: text/event-stream');
 $xml = $n === 1
-    ? '<score-partwise><part id="P1"><measure>'
-    : "Sure!\n```xml\n<?xml version=\"1.0\"?><score-partwise version=\"3.1\"><!-- riffi-warning: Bar 2: a note was hard to read. --><part-list><score-part id=\"P1\"><part-name>Violin</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\"><note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note></measure></part></score-partwise>\n```";
+    ? '{"measures": [{"n": 1, "s1": "A4"}]}'
+    : "Sure!\n```json\n" . json_encode([
+        'title' => 'Tiny tune',
+        'staves' => 1,
+        'measures' => [['n' => 1, 'key' => 0, 'time' => '4/4', 's1' => 'A4w']],
+        'warnings' => ['Bar 2: a note was hard to read.'],
+    ]) . "\n```";
 $send = function (string $event, array $data) {
     echo "event: $event\ndata: " . json_encode($data) . "\n\n";
     flush();

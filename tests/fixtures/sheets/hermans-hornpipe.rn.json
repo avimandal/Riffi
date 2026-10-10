@@ -1,0 +1,34 @@
+{
+  "title": "Herman's hornpipe",
+  "composer": "Mark O'Connor",
+  "tempo": { "bpm": 70, "beat": "q", "text": "Brightly" },
+  "staves": 1,
+  "measures": [
+    { "n": 0, "pickup": true, "key": 2, "time": "4/4", "clef": "treble", "s1": "A5e" },
+    { "n": 1, "repeat": "start", "s1": "F#5s D5s A4s D5s E5s C#5s A4s C#5s D5s B4s F#4s B4s A4s F#4s D4s F#4s" },
+    { "n": 2, "s1": "E4s C#4s E4s A4s C#5s A4s E4s A4s B4s G#4s B4s D5s C#5s A4s C#5s E5s" },
+    { "n": 3, "s1": "F#5s D5s A4s D5s E5s C#5s A4s C#5s D5s B4s G4s B4s A4s F#4s D4s F#4s" },
+    { "n": 4, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s G4s F#4s E4s D4s C#4e A5e" },
+    { "n": 5, "s1": "F#5s D5s A4s D5s E5s C#5s A4s C#5s D5s B4s F#4s B4s A4s F#4s D4s F#4s" },
+    { "n": 6, "s1": "E4s C#4s E4s A4s C#5s A4s E4s A4s B4s G#4s B4s D5s C#5s A4s C#5s E5s" },
+    { "n": 7, "s1": "F#5s D5s F#5s A5s E5s C#5s A4s C#5s D5s B4s G4s B4s A4s F#4s D4s F#4s" },
+    { "n": 8, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s G4s F#4s E4s D4s 3( A4e C#5e E5e )" },
+    { "n": 9, "s1": "E5s G5s F#5s E5s D5s C#5s A4s C#5s E4s G#4s B4s G#4s A4s C#5s E5s A5s" },
+    { "n": 10, "s1": "F#5s D5s A4s D5s E5s C#5s A4s C#5s 3( D5s E5s D5s ) C#5s B4s A4s C#5s 3( D5s E5s F#5s )" },
+    { "n": 11, "s1": "E5s C#5s A4s C#5s E5s C#5s A4s C#5s D5s B4s G#4s B4s C#5s A4s C#5s E5s" },
+    { "n": 12, "s1": "F#5s D5s A4s D5s E5s C#5s A4s C#5s 3( D5s E5s D5s ) C#5s B4s A4s C#5s 3( D5s E5s F#5s )" },
+    { "n": 13, "s1": "E5s C#5s A4s C#5s G5s E5s C#5s E5s F#5s E5s C#5s E5s F#5e D5s F#5s" },
+    { "n": 14, "s1": "E5s C#5s A4s C#5s E5s C#5s A4s C#5s 3( D5s E5s D5s ) C#5s B4s A4s C#5s 3( D5s E5s F#5s )" },
+    { "n": 15, "s1": "E5s C#5s A4s C#5s G5s E5s C#5s E5s F#5s E5s C#5s E5s F#5e D5s F#5s" },
+    { "n": 16, "repeat": "end", "s1": "E5s C#5s A4s C#5s D5s B4s G4s B4s A4s G#4s A4s B4s A4e A5e" },
+    { "n": 17, "s1": "F#5s D5s A4s D5s E5s C#5s A4s C#5s D5s B4s G4s B4s A4s F#4s D4s F#4s" },
+    { "n": 18, "s1": "E4s C#4s E4s A4s C#5s A4s E4s A4s B4s G#4s B4s D5s C#5s A4s C#5s E5s" },
+    { "n": 19, "s1": "F#5s D5s A4s D5s E5s C#5s A4s C#5s D5s B4s G4s B4s A4s F#4s D4s F#4s" },
+    { "n": 20, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s G4s F#4s E4s D4s C#4e re" },
+    { "n": 21, "s1": "D4+A4h rh" }
+  ],
+  "warnings": [
+    "Bar 4: pencil marks over the slur made one note hard to read.",
+    "Bar 10: please check the triplet notes under the highlighter."
+  ]
+}

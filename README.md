@@ -190,7 +190,12 @@ Copy `api/config.sample.php`, choose the AI provider and fill in its key, and ch
 | `ANTHROPIC_API_KEY` | | Only needed for `PROVIDER => 'claude'` ([console.anthropic.com](https://console.anthropic.com/)) |
 | `CLAUDE_MODEL` | `claude-sonnet-5-5` | |
 | `MAX_PAGES` / `MAX_BYTES_PER_PAGE` | 8 / 3 MB | |
-| `RATE_LIMIT_PER_HOUR` | 20 | Scans per IP per hour (Riffi's own limit) |
+| `RATE_LIMIT_PER_HOUR` | 40 | Pages read per IP per hour (Riffi's own limit) |
+| `TRUST_PROXY` | `false` | Set `true` behind Cloudflare so the limit counts each visitor, not Cloudflare |
+| `REQUEST_SECONDS` | 85 | Deadline for one page. Keep it under Cloudflare's 100 s |
+| `LOG_FILE` | `null` | Private error log; `null` = `riffi-logs/omr.log` next to the web root, `false` = off |
+| `DIAGNOSTICS` | `true` | Allows **Parents → Settings → Check music reader** |
+| `GEMINI_THINKING` | `low` | Gemini thinking level (`low` keeps one page well inside the deadline) |
 
 Both providers get the same prompt, the same validation and the same single retry. If Gemini's free tier runs out of quota (HTTP 429) or either provider is overloaded, kids see "Riffi's music reader is busy, try again in a minute." The free tier has per-minute and per-day request limits, so a busy household may occasionally hit them; switching `PROVIDER` to `claude` (paid) avoids that.
 
@@ -212,9 +217,37 @@ If you get `"not_configured"`, the config file wasn't found or the key is empty.
 
 ### 4. PHP settings
 
-PHP 8.1 or newer with `curl`, `dom`, `fileinfo` and `mbstring`. Upload limits are set in `api/.user.ini` (PHP-FPM hosts) and `api/.htaccess` (mod_php hosts): 4 MB per file, 34 MB per request, 10 files, 600 s execution time. Some hosts ignore these: if reading several pages fails with "too big", raise `upload_max_filesize` / `post_max_size` in the control panel. If long reads time out, raise `max_execution_time` (a few pages can take a minute or two).
+PHP 8.1 or newer with `curl`, `dom`, `fileinfo` and `mbstring`. Upload limits are set in `api/.user.ini` (PHP-FPM hosts) and `api/.htaccess` (mod_php/LiteSpeed hosts): 4 MB per file, 34 MB per request, 10 files. Some hosts ignore these: if reading fails with "too big", raise `upload_max_filesize` / `post_max_size` in the control panel.
+
+**Time limits.** Each page is a separate request with its own deadline (`REQUEST_SECONDS`, 85 s), and the endpoint calls `set_time_limit` itself, so a host's 30 s `max_execution_time` only matters if the host forbids `set_time_limit`. The self-check (below) tells you if it does. A typical page takes 15–40 s.
 
 The rate limiter writes tiny counter files to the system temp folder by default. If the host's temp folder isn't writable or is shared, set `RATE_LIMIT_DIR` in the config to a private folder outside the web root.
+
+### Checking and troubleshooting sheet reading
+
+**Parents → Settings → Check music reader** asks the server for a report (it never shows keys):
+
+- whether the config was found and which provider and model it uses;
+- whether the model name exists for your key (catches a wrong `GEMINI_MODEL` or a bad key);
+- a tiny test request to the AI (catches a host that blocks outgoing connections);
+- PHP's time limit and whether `set_time_limit` works;
+- whether the reply **streams** (if a proxy or LiteSpeed buffers it, Cloudflare's 100 s limit can still cut long pages off);
+- where the private log is.
+
+**Copy report** puts it on the clipboard, ready to paste into an issue or email.
+
+When reading fails, the message says why, in plain words, and ends with a **Reference** code:
+
+| Category | What it means | What to do |
+|---|---|---|
+| Busy | The AI's limit (e.g. Gemini free tier per-minute quota) or it's overloaded | Wait a minute |
+| Took too long | The page hit the deadline, or Cloudflare cut it off (524) | Try a clearer, tighter crop; run the check |
+| Can't reach the AI | The host blocked the outgoing connection or TLS failed | Ask the host to allow outgoing HTTPS to `generativelanguage.googleapis.com` (or `api.anthropic.com`) |
+| Settings problem | Bad key, unknown model name, region not supported | Check `GEMINI_API_KEY` / `GEMINI_MODEL` |
+| Not set up | No config file or empty key | See step 3 |
+| Couldn't read the music | The AI's answer wasn't usable music, twice | Retake the photo |
+
+The **private log** is `riffi-logs/omr.log` in the folder *above* the web root (e.g. `/home/<you>/riffi-logs/omr.log`; open it with the control panel's File Manager, since FTP is scoped to the site root). Each line is JSON with the reference code, the stage, the provider's HTTP status and its error message, with API keys scrubbed. It rotates at 1 MB. If that folder isn't writable, the check tells you where the log went instead (set `LOG_FILE` to choose).
 
 ### 5. First run on each device
 
@@ -297,7 +330,12 @@ Metronome (Web Audio lookahead scheduler) → click times                       
                                                                      practice log (IndexedDB)
 ```
 
-- **Sheet reading:** photos are straightened, cropped and shrunk to ≤2000 px JPEGs (q 0.85) in the browser, then sent to `api/omr.php`. The endpoint has one small adapter per AI provider behind the same interface: **Google Gemini** (`generateContent`, the default) or **Anthropic Claude** (Messages API, streamed). Both get the same prompt asking for MusicXML 3.1 partwise only. The result is validated (it must parse and contain notes). If it isn't valid, the endpoint retries once with the parser error, then gives up with a friendly message. Doubtful spots come back as warnings for the review screen. Nothing is stored on the server. With Claude, the request opts in to the API's server-side refusal fallback (`fallbacks: "default"`); set `USE_FALLBACKS` to `false` to turn that off. You can also open MusicXML files directly (`.mxl` zipped files are unpacked in the browser).
+- **Sheet reading:** photos are straightened, cropped and shrunk to ≤2000 px JPEGs (q 0.85) in the browser, then sent to `api/omr.php` **one page per request**, so no single request runs long.
+  - **Compact notes, not MusicXML:** the AI answers in *Riffi Notation*, a small JSON format (one string of tokens per bar, e.g. `"D5e. E5s 3( F#5e G5e A5e ) B5q"`), about a tenth the size of MusicXML. The browser checks each bar's beats and builds the MusicXML itself (`src/sheet/notation.ts`). Fewer output tokens is the main reason a dense page now fits well inside the time limits.
+  - **Streaming:** the endpoint streams the provider's answer (Gemini `streamGenerateContent`, Claude streamed Messages) and streams its own reply to the browser as JSON lines: keep-alive pings every few seconds, "bars found so far" progress, then the result or an error. Keep-alives stop Cloudflare and LiteSpeed treating the request as idle, and a hard deadline (`REQUEST_SECONDS`) ends it cleanly before Cloudflare's 100 s cut-off.
+  - **Validation and retry:** the result must be valid notation. If it isn't, the endpoint retries once (if there's time) with the problems listed, then gives up with a friendly message. Doubtful spots come back as warnings for the review screen.
+  - **Providers:** one small adapter per AI behind the same interface: **Google Gemini** (the default; low thinking level, JSON output) or **Anthropic Claude**. With Claude, the request opts in to the API's server-side refusal fallback (`fallbacks: "default"`); set `USE_FALLBACKS` to `false` to turn that off.
+  - Nothing is stored on the server except the private error log (no images, no music). You can also open MusicXML files directly (`.mxl` zipped files are unpacked in the browser).
 - **Review:** the music is drawn with OpenSheetMusicDisplay next to the photo thumbnails. Tap a note (or use the arrow keys) to move it up or down, change its length, turn it into a rest, delete it, or add a note or rest after it. You can also change the key, time signature and title. "Looks good!" saves it.
 - **Metronome:** clicks are scheduled on the audio clock with a lookahead (the timer only wakes the scheduler). There's a one-bar count-in, an accent on beat 1, a short high woodblock click (mostly above 4 kHz), and a big bouncing dot that always shows.
 - **Ignoring the metronome**, in layers: exact click times are known, so analysis frames within ±35 ms of a click can't start or end notes; the mono engine band-limits to 60 Hz–3.5 kHz and drops pitches outside the instrument's range; the mic uses echo cancellation but no noise suppression or auto gain; and the app suggests headphones.
@@ -324,7 +362,7 @@ Metronome (Web Audio lookahead scheduler) → click times                       
 - Tempo is a single BPM per run. Tempo changes written mid-piece are not followed, but they don't break anything.
 - With repeats, a note that was played differently on each pass shows its trickiest result on the coloured sheet.
 - iPhone/iPad Safari has no vibration, so the "vibrate" metronome option only appears where it's supported (Android).
-- Sheet reading is tested against fake Gemini and Claude APIs; it hasn't been run against the real services from CI (no keys there).
+- Sheet reading is tested against fake Gemini and Claude APIs (replaying a hand transcription of `tests/fixtures/sheets/hermans-hornpipe.webp`, a dense violin page); it hasn't been run against the real services from CI (no keys there).
 - Engine and scoring tests use synthetic audio. Real instruments, rooms and microphones vary, so the real-world acceptance checks in SPEC §17 (a phone's speaker at normal volume, a mid-range tablet with two-hand piano, installing on an iPad) still need doing on real devices.
 - Data is stored on one device only. Use **Parents → Backup** to move it. Clearing the browser's site data deletes it.
 

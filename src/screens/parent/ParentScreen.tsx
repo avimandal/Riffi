@@ -9,6 +9,7 @@ import { Icon } from '../../components/Icon';
 import { Modal } from '../../components/Modal';
 import { ParentGate } from '../../components/ParentGate';
 import { SoundCheck } from '../../components/SoundCheck';
+import { ReaderCheck } from '../../components/ReaderCheck';
 import { canVibrate } from '../../audio/metronome';
 import { BackupError, backupFileName, exportBackup, importBackup } from '../../data/backup';
 import { db } from '../../data/db';
@@ -209,6 +210,10 @@ function Settings() {
             onBlur={(e) => e.target.value !== '' && set({ latencyMs: Math.max(0, Math.min(600, Number(e.target.value))) })}
           />
         </div>
+      </section>
+      <section className="card stack">
+        <h2>{t.parent.readerCheckTitle}</h2>
+        <ReaderCheck />
       </section>
       <section className="card stack">
         <h2>{t.parent.metronome}</h2>
