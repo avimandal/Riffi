@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { INSTRUMENTS, UPLOAD_MAX_PAGES, type Instrument } from '../../config';
 import { t } from '../../i18n';
 import { useApp } from '../../app/state';
-import { navigate } from '../../app/router';
+import { Link, navigate } from '../../app/router';
 import { Icon } from '../../components/Icon';
 import { INSTRUMENT_ICON } from '../../components/instrumentIcons';
 import { newId } from '../../data/db';
 import { countPitchedNotes, parseMusicXml } from '../../sheet/musicxml';
+import { musicXmlFromFile } from '../../sheet/mxl';
 import { OmrError, readSheetMusic } from '../../sheet/omrClient';
 import { CropModal } from './CropModal';
 import { saveDraft } from './draft';
@@ -63,7 +64,7 @@ export default function AddMusicScreen() {
     if (!f) return;
     setError(null);
     try {
-      const xml = await f.text();
+      const xml = await musicXmlFromFile(f);
       const score = parseMusicXml(xml);
       if (countPitchedNotes(score) === 0) {
         setError(t.add.errors.noNotes);
@@ -156,6 +157,9 @@ export default function AddMusicScreen() {
           <Icon name="photo_library" /> {t.add.fromGallery}
         </button>
       </div>
+      <p className="notice only-music" role="note">
+        <Icon name="photo_camera" /> <span>{t.add.onlyMusic}</span> <Link to="/privacy">{t.profiles.privacyLink}</Link>
+      </p>
       <input ref={camera} type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => (addFiles(e.target.files), (e.target.value = ''))} />
       <input ref={gallery} type="file" accept="image/*" multiple hidden onChange={(e) => (addFiles(e.target.files), (e.target.value = ''))} />
       <input
@@ -249,7 +253,7 @@ export default function AddMusicScreen() {
         <input
           ref={file}
           type="file"
-          accept=".musicxml,.xml,application/vnd.recordare.musicxml+xml,application/xml,text/xml"
+          accept=".mxl,.musicxml,.xml,application/vnd.recordare.musicxml,application/vnd.recordare.musicxml+xml,application/xml,text/xml"
           hidden
           data-testid="musicxml-input"
           onChange={(e) => {

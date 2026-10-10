@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 
-const fixture = fileURLToPath(new URL('../fixtures/musicxml/twinkle.musicxml', import.meta.url));
+// MuseScore's default export format (compressed .mxl), so the browser unzip path is covered too.
+const fixture = fileURLToPath(new URL('../fixtures/musicxml/twinkle.mxl', import.meta.url));
 
 test('create a kid, import music, practise with the fake mic, see results saved', async ({ page }) => {
   const errors: string[] = [];
@@ -16,7 +17,7 @@ test('create a kid, import music, practise with the fake mic, see results saved'
   await page.getByRole('button', { name: "Let's go!" }).click();
   await expect(page.getByRole('heading', { name: /Mia!/ })).toBeVisible();
 
-  // Import a MusicXML file (bypassing photo reading).
+  // Import a compressed MusicXML (.mxl) file (bypassing photo reading).
   await page.getByTestId('add-music').click();
   await page.getByTestId('musicxml-input').setInputFiles(fixture);
   await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible();
@@ -79,4 +80,6 @@ test('privacy page is reachable without a profile', async ({ page }) => {
   await page.goto('/privacy');
   await expect(page.getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
   await expect(page.getByText(/Australian Privacy Act/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Google Gemini free tier' })).toBeVisible();
+  await expect(page.getByText(/Google may use the photos sent to it to improve/)).toBeVisible();
 });

@@ -5,7 +5,7 @@ export interface OmrResult {
   warnings: string[];
 }
 
-export type OmrErrorKind = 'offline' | 'tooBig' | 'rateLimited' | 'unreadable' | 'server';
+export type OmrErrorKind = 'offline' | 'tooBig' | 'rateLimited' | 'busy' | 'unreadable' | 'server';
 
 export class OmrError extends Error {
   constructor(readonly kind: OmrErrorKind, message?: string) {
@@ -56,6 +56,8 @@ export function readSheetMusic(pages: Blob[], instrument: Instrument, onProgress
       }
       if (xhr.status === 413) reject(new OmrError('tooBig'));
       else if (xhr.status === 429) reject(new OmrError('rateLimited'));
+      // The AI provider's own limit (e.g. Gemini free tier) or it's overloaded.
+      else if (xhr.status === 503 && body?.code === 'busy') reject(new OmrError('busy'));
       else if (xhr.status === 422) reject(new OmrError('unreadable', body?.error));
       else reject(new OmrError('server', body?.error));
     };

@@ -76,10 +76,46 @@ check('stores only hashed IPs', count($files) === 1 && !str_contains((string) fi
 array_map('unlink', $files);
 rmdir($dir);
 
-// Prompt content
-$content = riffi_user_content([['image/jpeg', 'AAA'], ['image/png', 'BBB']], 'piano');
-check('sends pages in order', $content[1]['source']['data'] === 'AAA' && $content[3]['source']['data'] === 'BBB');
-check('asks for both piano staves', str_contains(end($content)['text'], 'both staves'));
+// Prompt content (provider-neutral)
+$parts = riffi_user_parts([['image/jpeg', 'AAA'], ['image/png', 'BBB']], 'piano');
+check('sends pages in order', $parts[1]['image'][1] === 'AAA' && $parts[3]['image'][1] === 'BBB');
+check('asks for both piano staves', str_contains(end($parts)['text'], 'both staves'));
+$turns = [
+    ['role' => 'user', 'parts' => $parts],
+    ['role' => 'assistant', 'parts' => [['text' => 'broken']]],
+    ['role' => 'user', 'parts' => [['text' => 'fix it']]],
+];
+
+// Gemini adapter
+$g = RiffiGemini::body('SYSTEM', $turns, 1000);
+check('gemini: system instruction', $g['system_instruction']['parts'][0]['text'] === 'SYSTEM');
+check('gemini: images as inline_data', $g['contents'][0]['parts'][1]['inline_data'] === ['mime_type' => 'image/jpeg', 'data' => 'AAA']);
+check('gemini: assistant turns become "model"', array_column($g['contents'], 'role') === ['user', 'model', 'user']);
+check('gemini: output limit', $g['generationConfig']['maxOutputTokens'] === 1000);
+check('gemini: parses text and skips thoughts', RiffiGemini::parse(['candidates' => [['content' => ['parts' => [['text' => 'hmm', 'thought' => true], ['text' => '<a/>']]], 'finishReason' => 'STOP']]]) === ['<a/>', 'end']);
+check('gemini: MAX_TOKENS', RiffiGemini::parse(['candidates' => [['content' => ['parts' => [['text' => 'x']]], 'finishReason' => 'MAX_TOKENS']]])[1] === 'max_tokens');
+check('gemini: safety stop is a refusal', RiffiGemini::parse(['candidates' => [['finishReason' => 'SAFETY']]])[1] === 'refusal');
+check('gemini: blocked prompt is a refusal', RiffiGemini::parse(['promptFeedback' => ['blockReason' => 'OTHER']])[1] === 'refusal');
+
+// Claude adapter
+$c = RiffiClaude::body('SYSTEM', $turns, 'claude-sonnet-5-5', 2000, 'high');
+check('claude: images as base64 sources', $c['messages'][0]['content'][1]['source'] === ['type' => 'base64', 'media_type' => 'image/jpeg', 'data' => 'AAA']);
+check('claude: roles', array_column($c['messages'], 'role') === ['user', 'assistant', 'user']);
+check('claude: system, model, effort', $c['system'] === 'SYSTEM' && $c['model'] === 'claude-sonnet-5-5' && $c['output_config']['effort'] === 'high');
+
+// Provider choice
+$pc = riffi_default_config();
+try {
+    riffi_provider($pc);
+    check('needs a key for the chosen provider', false);
+} catch (RiffiHttpError $e) {
+    check('needs a key for the chosen provider', $e->errorCode === 'not_configured');
+}
+$pc['GEMINI_API_KEY'] = 'g';
+check('gemini is the default provider', riffi_provider($pc) instanceof RiffiGemini);
+$pc['PROVIDER'] = 'claude';
+$pc['ANTHROPIC_API_KEY'] = 'a';
+check('claude when chosen', riffi_provider($pc) instanceof RiffiClaude);
 
 fwrite(STDOUT, $failures === 0 ? "All PHP unit tests passed\n" : "$failures PHP test(s) failed\n");
 exit($failures === 0 ? 0 : 1);
