@@ -44,7 +44,11 @@ php -S 127.0.0.1:8791 -t tests/php >/dev/null 2>&1 &
 sleep 1
 
 
-fail() { echo "FAIL: $1"; exit 1; }
+fail() { # show the private logs so CI failures explain themselves
+  echo "FAIL: $1"
+  for f in "$TMP"/logs/*.log; do [ -f "$f" ] && { echo "--- $f"; tail -n 20 "$f"; }; done
+  exit 1
+}
 scan() { # port → body, then status on the last line
   curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F 'page=1' -F 'pages=2' -F "pages[]=@tests/fixtures/sheets/hermans-hornpipe.webp;type=image/webp" "http://127.0.0.1:$1/omr.php"
 }
