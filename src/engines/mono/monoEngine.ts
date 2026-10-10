@@ -22,10 +22,15 @@ export const MONO_ENGINE = {
   minNoteMs: 60,
   /** Unvoiced time that ends a note. */
   gapMs: 50,
-  /** Ignore analysis frames this close to a metronome click (SPEC §5). */
-  clickMaskMs: 35,
-  /** Click sound centre, relative to its scheduled start. */
-  clickCentreMs: 10,
+  /**
+   * Ignore analysis frames around each metronome click (SPEC §5): from this
+   * long before the click (the 2048-sample window reaches ~21 ms ahead)…
+   */
+  clickPreMs: 25,
+  /** …until this long after the click's sound has ended. */
+  clickPostMs: 25,
+  /** Length of the practice metronome's click. */
+  defaultClickSoundMs: 20,
   /** Analysis band: keeps the >4 kHz click out of the pitch tracker. */
   lowpassHz: 3500,
   highpassHz: 60,
@@ -58,6 +63,17 @@ export interface MonoEngineOptions {
   latencyMs?: number;
   /** Measured RMS of the room with nobody playing. */
   noiseFloor?: number;
+  /** Override the instrument's pitch range (MIDI), e.g. a wide range for a chromatic tuner. */
+  range?: { low: number; high: number };
+}
+
+/** The tuner's view of the pitch right now. */
+export interface PitchReading {
+  /** Median-filtered MIDI pitch (A4 = 440 Hz). */
+  midi: number;
+  clarity: number;
+  /** Session ms of the frame. */
+  t: number;
 }
 
 /**
@@ -89,9 +105,12 @@ export class MonoEngine implements ListeningEngine {
   private candidate: Frame[] = [];
   private candidateStart = 0;
   private maskedRun: Frame[] = [];
+  private maskedVoiced: number[] = [];
   private gapMs = 0;
-  private clicks: number[] = [];
-  private clickCursor = 0;
+  /** Times (session ms, corrected) when the engine mustn't listen: metronome clicks, reference tones. */
+  private masks: { start: number; end: number }[] = [];
+  /** Latest pitch for the tuner (null when silent, unclear or muted). */
+  reading: PitchReading | null = null;
   /** Live input level 0..1 for the meter. */
   level = 0;
 
@@ -105,7 +124,7 @@ export class MonoEngine implements ListeningEngine {
     this.lp1 = Biquad.lowpass(sr, cfg.lowpassHz);
     this.lp2 = Biquad.lowpass(sr, cfg.lowpassHz);
     this.hp = Biquad.highpass(sr, cfg.highpassHz);
-    const range = INSTRUMENT_RANGE[opts.instrument];
+    const range = opts.range ?? INSTRUMENT_RANGE[opts.instrument];
     this.minMidi = range.low - cfg.rangeSlack;
     this.maxMidi = range.high + cfg.rangeSlack;
     this.threshold =
@@ -115,19 +134,33 @@ export class MonoEngine implements ListeningEngine {
     this.hopMs = (cfg.hopSize / sr) * 1000;
   }
 
-  /** Metronome click times (session ms, already in the corrected time base). */
+  /** Metronome click times (session ms, already in the corrected time base). Replaces all masks. */
   setClickTimes(times: number[]) {
-    this.clicks = [...times].sort((a, b) => a - b);
-    this.clickCursor = 0;
+    this.masks = [];
+    for (const t of [...times].sort((a, b) => a - b)) this.addClick(t);
+  }
+
+  /** One more click (e.g. from a live metronome), lasting `soundMs`. */
+  addClick(t: number, soundMs: number = MONO_ENGINE.defaultClickSoundMs) {
+    this.addMask(t - MONO_ENGINE.clickPreMs, t + soundMs + MONO_ENGINE.clickPostMs);
+  }
+
+  /** Don't listen between these session times (ms), e.g. while a reference tone plays. */
+  addMask(start: number, end: number) {
+    const m = { start, end };
+    let i = this.masks.length;
+    while (i > 0 && this.masks[i - 1].start > start) i--;
+    this.masks.splice(i, 0, m);
   }
 
   private isMasked(t: number): boolean {
-    const cfg = MONO_ENGINE;
-    while (this.clickCursor < this.clicks.length && this.clicks[this.clickCursor] + cfg.clickCentreMs < t - cfg.clickMaskMs) {
-      this.clickCursor++;
+    // Drop masks that are long gone (keeps the list short in endless sessions).
+    while (this.masks.length && this.masks[0].end < t - 1000) this.masks.shift();
+    for (const m of this.masks) {
+      if (m.start > t) return false;
+      if (t <= m.end) return true;
     }
-    const c = this.clicks[this.clickCursor];
-    return c !== undefined && Math.abs(c + cfg.clickCentreMs - t) <= cfg.clickMaskMs;
+    return false;
   }
 
   process(samples: Float32Array, startMs: number): void {
@@ -172,6 +205,22 @@ export class MonoEngine implements ListeningEngine {
       }
     }
 
+    if (this.isMasked(t)) {
+      // Don't let clicks (or our own reference tone) start, end or bend notes,
+      // or leak into the median. Remember the raw frame so a real note that
+      // starts on the beat can be back-dated to its true start.
+      const prev = this.maskedRun[this.maskedRun.length - 1];
+      this.maskedVoiced = voiced && prev && Number.isFinite(prev.midi) ? [...this.maskedVoiced, midi].slice(-cfg.medianFrames) : voiced ? [midi] : [];
+      this.maskedRun.push({ t, midi: voiced ? median(this.maskedVoiced) : NaN, clarity, rms: level });
+      this.reading = null;
+      return;
+    }
+    // Coming out of a mask, carry on from what was sounding during it (not from before it).
+    if (this.maskedRun.length) {
+      const last = this.maskedRun[this.maskedRun.length - 1];
+      this.medianBuf = Number.isFinite(last.midi) ? [...this.maskedVoiced] : [];
+      this.maskedVoiced = [];
+    }
     if (voiced) {
       this.medianBuf.push(midi);
       if (this.medianBuf.length > cfg.medianFrames) this.medianBuf.shift();
@@ -179,13 +228,7 @@ export class MonoEngine implements ListeningEngine {
       this.medianBuf = [];
     }
     const frame: Frame = { t, midi: voiced ? median(this.medianBuf) : NaN, clarity, rms: level };
-
-    if (this.isMasked(t)) {
-      // Don't let clicks start, end or bend notes. Remember the frame so a real
-      // note that starts on the beat can be back-dated to its true start.
-      this.maskedRun.push(frame);
-      return;
-    }
+    this.reading = voiced ? { midi: frame.midi, clarity, t } : null;
     this.step(frame);
     this.maskedRun = [];
   }
@@ -384,7 +427,8 @@ export class MonoEngine implements ListeningEngine {
     this.sinceHop = 0;
     this.samplesSeen = 0;
     this.t0Ms = null;
-    this.clickCursor = 0;
+    this.masks = [];
+    this.reading = null;
     this.lp1.reset();
     this.lp2.reset();
     this.hp.reset();

@@ -1,17 +1,11 @@
 import type { MetronomeMode } from '../config';
 import type { Beat } from './beats';
 import { renderClick } from './click';
+import { LookaheadScheduler } from './scheduler';
 
-const LOOKAHEAD_S = 0.12;
-const TICK_MS = 25;
-
-/**
- * Web Audio lookahead scheduler ("a tale of two clocks"): a light timer
- * wakes up often, but every click is placed on the audio clock, so timing
- * is sample-accurate and never drifts with the main thread.
- */
+/** The practice metronome: plays a run's fixed list of beats on the shared lookahead scheduler. */
 export class Metronome {
-  private timer: number | null = null;
+  private scheduler: LookaheadScheduler<{ when: number; beat: Beat }> | null = null;
   private beats: Beat[] = [];
   private next = 0;
   private startAt = 0;
@@ -48,31 +42,35 @@ export class Metronome {
     this.gain = this.ctx.createGain();
     this.gain.gain.value = this.volume;
     this.gain.connect(this.ctx.destination);
-    this.tick();
-    this.timer = window.setInterval(() => this.tick(), TICK_MS);
+    this.scheduler = new LookaheadScheduler(
+      this.ctx,
+      {
+        peek: () => {
+          const b = this.beats[this.next];
+          return b ? { when: this.startAt + b.timeMs / 1000, beat: b } : null;
+        },
+        advance: () => {
+          this.next++;
+        },
+      },
+      ({ when, beat: b }) => this.play(when, b),
+    );
+    this.scheduler.start();
   }
 
-  private tick() {
-    const horizon = this.ctx.currentTime + LOOKAHEAD_S;
-    while (this.next < this.beats.length) {
-      const b = this.beats[this.next];
-      const when = this.startAt + b.timeMs / 1000;
-      if (when > horizon) break;
-      this.next++;
-      if (when < this.ctx.currentTime - 0.01) continue;
-      if (this.mode === 'sound' && this.buffers && this.gain) {
-        const src = this.ctx.createBufferSource();
-        src.buffer = b.accent ? this.buffers.accent : this.buffers.normal;
-        src.connect(this.gain);
-        src.start(when);
-        this.sources.push(src);
-        src.onended = () => {
-          this.sources = this.sources.filter((s) => s !== src);
-        };
-      } else if (this.mode === 'vibrate' && 'vibrate' in navigator) {
-        const delay = Math.max(0, (when - this.ctx.currentTime) * 1000);
-        window.setTimeout(() => navigator.vibrate?.(b.accent ? 40 : 20), delay);
-      }
+  private play(when: number, b: Beat) {
+    if (this.mode === 'sound' && this.buffers && this.gain) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = b.accent ? this.buffers.accent : this.buffers.normal;
+      src.connect(this.gain);
+      src.start(when);
+      this.sources.push(src);
+      src.onended = () => {
+        this.sources = this.sources.filter((s) => s !== src);
+      };
+    } else if (this.mode === 'vibrate' && 'vibrate' in navigator) {
+      const delay = Math.max(0, (when - this.ctx.currentTime) * 1000);
+      window.setTimeout(() => navigator.vibrate?.(b.accent ? 40 : 20), delay);
     }
   }
 
@@ -82,8 +80,8 @@ export class Metronome {
   }
 
   stop() {
-    if (this.timer !== null) window.clearInterval(this.timer);
-    this.timer = null;
+    this.scheduler?.stop();
+    this.scheduler = null;
     this.sources.forEach((s) => {
       try {
         s.stop();
