@@ -191,6 +191,9 @@ interface LineState {
   pending: boolean;
 }
 
+/** Notes worth hinting for each instrument (one staff); piano hints aren't filtered. */
+const HINT_RANGE: Partial<Record<Instrument, [string, string]>> = { violin: ['G3', 'E7'], voice: ['A2', 'C6'] };
+
 const chunks = <T>(xs: T[], n: number): T[][] => {
   const out: T[][] = [];
   for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
@@ -264,8 +267,8 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
       firstOfPiece: p === 0 && l === 0,
       lastOfPiece: p === pages.length - 1 && l === lines - 1,
       ctx: {},
-      hint: lineHint(page.heads?.[l], clef),
-      heads: headNames(page.heads?.[l], clef),
+      hint: lineHint(page.heads?.[l], clef, 'bass', HINT_RANGE[instrument]),
+      heads: headNames(page.heads?.[l], clef, 'bass', HINT_RANGE[instrument]),
       measures: [],
       unsure: new Set<number>(),
       problems: [],
@@ -364,7 +367,7 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
         );
       } catch (e) {
         // A double-check that fails keeps the first read (its bars still get the code checks' flags).
-        if (!(e instanceof OmrError) || !['unreadable', 'timeout', 'server'].includes(e.kind)) throw e;
+        if (!(e instanceof OmrError) || !['unreadable', 'timeout', 'server', 'busy'].includes(e.kind)) throw e;
         for (const { st } of ready) {
           st.trace.checkSkipped = `double-check failed (${e.code ?? e.kind})`;
           st.pending = false;

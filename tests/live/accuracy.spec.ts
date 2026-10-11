@@ -103,20 +103,21 @@ for (const file of fixtures) {
 
     const final = compareScores(result.score, ref);
     const first = compareScores(firstReadScore(result.score, result.trace.lines), ref);
-    const summary = (r: AccuracyReport) => ({ pitch: r.pitch, rhythm: r.rhythm, key: r.key.ok, time: r.time.ok, pickup: r.pickup.ok, bars: r.barsFound });
+    const summary = (r: AccuracyReport) => ({ pitch: r.pitch, rhythm: r.rhythm, lengths: r.lengths, key: r.key.ok, time: r.time.ok, pickup: r.pickup.ok, bars: r.barsFound });
     console.log(`\n${file} (${result.lines.join('+')} lines, ${recorded.length} requests, ${seconds} s)`);
     console.log(formatReport(first, 'FIRST READ: '));
     console.log(formatReport(final, 'AFTER CHECK: '));
 
     mkdirSync(outDir, { recursive: true });
     const stamp = new Date().toISOString().slice(0, 10);
+    const model = provider === 'claude' ? (process.env.CLAUDE_MODEL ?? 'claude-default') : (process.env.GEMINI_MODEL ?? 'gemini-flash-latest');
     writeFileSync(
-      join(outDir, `${name}.${provider}.json`),
+      join(outDir, `${name}.${model}.json`),
       JSON.stringify(
         {
           fixture: file,
           provider,
-          model: provider === 'claude' ? (process.env.CLAUDE_MODEL ?? 'default') : (process.env.GEMINI_MODEL ?? 'gemini-flash-latest'),
+          model,
           date: stamp,
           instrument,
           lines: result.lines,
@@ -129,7 +130,7 @@ for (const file of fixtures) {
         1,
       ) + '\n',
     );
-    writeFileSync(join(outDir, `${name}.${provider}.md`), `# ${file}: ${provider}, ${stamp}\n\n\`\`\`\n${formatReport(first, 'FIRST READ: ')}\n\n${formatReport(final, 'AFTER CHECK: ')}\n\`\`\`\n`);
+    writeFileSync(join(outDir, `${name}.${model}.md`), `# ${file}: ${model}, ${stamp}\n\n\`\`\`\n${formatReport(first, 'FIRST READ: ')}\n\n${formatReport(final, 'AFTER CHECK: ')}\n\`\`\`\n`);
     expect(result.score.measures.length).toBeGreaterThan(0);
   });
 }

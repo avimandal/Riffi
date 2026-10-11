@@ -7,8 +7,11 @@ import { parseStaff, type RnMeasure, type RnScore } from './notation';
  * Bars are matched by content (so a missing pickup or an extra bar doesn't
  * shift everything after it), then notes inside each pair of bars are matched
  * in order. Pitch accuracy = matched notes / the larger of the two note counts
- * (extra notes count against it too). Rhythm accuracy = matched notes that also
- * start at the same point in the bar and last the same time, / reference notes.
+ * (extra notes count against it too). Rhythm accuracy (strict) = matched notes
+ * that also start at the same point in the bar and last the same time, /
+ * reference notes: one missing note early in a bar shifts every later note, so
+ * this is harsh. Lengths = matched notes with the right length (wherever they
+ * start), / reference notes.
  */
 
 interface Ev {
@@ -27,8 +30,10 @@ export interface BarAccuracy {
   predNotes: number;
   pitchMatched: number;
   rhythmMatched: number;
+  lengthMatched: number;
   pitch: number;
   rhythm: number;
+  lengths: number;
   uncertain?: boolean;
   extra?: boolean;
 }
@@ -38,6 +43,7 @@ export interface AccuracyReport {
   /** Over all certain bars (missing bars count as 0). */
   pitch: number;
   rhythm: number;
+  lengths: number;
   key: { ref?: number; got?: number; ok: boolean };
   time: { ref?: string; got?: string; ok: boolean };
   pickup: { ok: boolean; detail: string };
@@ -88,7 +94,8 @@ function lcs(a: Ev[], b: Ev[]): [number, number][] {
 function compareBar(ref: Ev[], pred: Ev[]) {
   const pairs = lcs(ref, pred);
   const rhythm = pairs.filter(([i, j]) => near(ref[i].start, pred[j].start) && near(ref[i].len, pred[j].len)).length;
-  return { pitchMatched: pairs.length, rhythmMatched: rhythm };
+  const lengths = pairs.filter(([i, j]) => near(ref[i].len, pred[j].len)).length;
+  return { pitchMatched: pairs.length, rhythmMatched: rhythm, lengthMatched: lengths };
 }
 
 const num = (m: RnMeasure, i: number) => (Number.isFinite(Number(m.n)) ? Number(m.n) : i);
@@ -120,7 +127,7 @@ export function compareScores(pred: RnScore, ref: RnScore & { uncertain?: number
   const bars: BarAccuracy[] = ref.measures.map((m, ri) => {
     const pj = match.get(ri);
     const pe = pj === undefined ? [] : P[pj];
-    const { pitchMatched, rhythmMatched } = compareBar(R[ri], pe);
+    const { pitchMatched, rhythmMatched, lengthMatched } = compareBar(R[ri], pe);
     const denom = Math.max(R[ri].length, pe.length);
     return {
       n: num(m, ri),
@@ -129,19 +136,22 @@ export function compareScores(pred: RnScore, ref: RnScore & { uncertain?: number
       predNotes: pe.length,
       pitchMatched,
       rhythmMatched,
+      lengthMatched,
       pitch: denom ? pitchMatched / denom : 1,
       rhythm: R[ri].length ? rhythmMatched / R[ri].length : 1,
+      lengths: R[ri].length ? lengthMatched / R[ri].length : 1,
       uncertain: uncertain.has(num(m, ri)) || undefined,
     };
   });
   const used = new Set(match.values());
   P.forEach((pe, pj) => {
-    if (!used.has(pj) && pe.length) bars.push({ n: num(pred.measures[pj], pj), matchedN: num(pred.measures[pj], pj), refNotes: 0, predNotes: pe.length, pitchMatched: 0, rhythmMatched: 0, pitch: 0, rhythm: 0, extra: true });
+    if (!used.has(pj) && pe.length) bars.push({ n: num(pred.measures[pj], pj), matchedN: num(pred.measures[pj], pj), refNotes: 0, predNotes: pe.length, pitchMatched: 0, rhythmMatched: 0, lengthMatched: 0, pitch: 0, rhythm: 0, lengths: 0, extra: true });
   });
   const counted = bars.filter((b) => !b.uncertain);
   const sum = (f: (b: BarAccuracy) => number) => counted.reduce((s, b) => s + f(b), 0);
   const pitch = sum((b) => b.pitchMatched) / Math.max(1, sum((b) => Math.max(b.refNotes, b.predNotes)));
   const rhythm = sum((b) => b.rhythmMatched) / Math.max(1, sum((b) => b.refNotes + (b.extra ? b.predNotes : 0)));
+  const lengths = sum((b) => b.lengthMatched) / Math.max(1, sum((b) => b.refNotes + (b.extra ? b.predNotes : 0)));
 
   const firstKey = (s: RnScore) => s.measures?.find((m) => m.key !== undefined)?.key;
   const firstTime = (s: RnScore) => s.measures?.find((m) => m.time !== undefined)?.time;
@@ -159,6 +169,7 @@ export function compareScores(pred: RnScore, ref: RnScore & { uncertain?: number
     bars,
     pitch,
     rhythm,
+    lengths,
     key: { ref: firstKey(ref), got: firstKey(pred), ok: firstKey(ref) === firstKey(pred) },
     time: { ref: firstTime(ref), got: firstTime(pred), ok: firstTime(ref) === firstTime(pred) },
     pickup,
@@ -171,11 +182,11 @@ export function compareScores(pred: RnScore, ref: RnScore & { uncertain?: number
 export function formatReport(r: AccuracyReport, label = ''): string {
   const pct = (x: number) => `${Math.round(x * 1000) / 10}%`;
   const lines = [
-    `${label}pitch ${pct(r.pitch)}, rhythm ${pct(r.rhythm)}; key ${r.key.ok ? 'ok' : `wrong (${r.key.got} vs ${r.key.ref})`}, time ${r.time.ok ? 'ok' : `wrong (${r.time.got} vs ${r.time.ref})`}, ${r.pickup.detail}; bars ${r.barsFound}/${r.barsExpected}`,
-    'bar  notes  pitch   rhythm',
+    `${label}pitch ${pct(r.pitch)}, rhythm ${pct(r.rhythm)} (note lengths ${pct(r.lengths)}); key ${r.key.ok ? 'ok' : `wrong (${r.key.got} vs ${r.key.ref})`}, time ${r.time.ok ? 'ok' : `wrong (${r.time.got} vs ${r.time.ref})`}, ${r.pickup.detail}; bars ${r.barsFound}/${r.barsExpected}`,
+    'bar  notes  pitch   rhythm  lengths',
   ];
   for (const b of r.bars) {
-    lines.push(`${String(b.extra ? `+${b.n}` : b.n).padStart(3)}  ${String(b.refNotes).padStart(5)}  ${pct(b.pitch).padStart(6)}  ${pct(b.rhythm).padStart(6)}${b.uncertain ? '  (uncertain, not counted)' : ''}${b.matchedN === undefined && !b.extra ? '  (missing)' : ''}`);
+    lines.push(`${String(b.extra ? `+${b.n}` : b.n).padStart(3)}  ${String(b.refNotes).padStart(5)}  ${pct(b.pitch).padStart(6)}  ${pct(b.rhythm).padStart(6)}  ${pct(b.lengths).padStart(6)}${b.uncertain ? '  (uncertain, not counted)' : ''}${b.matchedN === undefined && !b.extra ? '  (missing)' : ''}`);
   }
   return lines.join('\n');
 }

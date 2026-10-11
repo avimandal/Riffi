@@ -151,16 +151,28 @@ export function headHint(heads: Head[], clef = 'treble'): string {
   return groups.map((g) => g.map((h) => stepName(h.step, clef)).join('+')).join(' ');
 }
 
+/** Drop marks outside the notes an instrument can play (stray pencil, clef curls). Pure. */
+export function inRange(heads: Head[], clef: string, low: string, high: string): Head[] {
+  const d = (name: string) => LETTERS.indexOf(name[0]) + 7 * Number(name.slice(1));
+  const dl = d(low);
+  const dh = d(high);
+  return heads.filter((h) => {
+    const n = stepName(h.step, clef);
+    const v = d(n);
+    return v >= dl && v <= dh;
+  });
+}
+
 /** The hint for one line: one staff, or "upper staff: … / lower staff: …" for piano. Pure. */
-export function lineHint(staves: Head[][] | undefined, clef = 'treble', clef2 = 'bass'): string {
+export function lineHint(staves: Head[][] | undefined, clef = 'treble', clef2 = 'bass', range?: [string, string]): string {
   if (!staves || staves.length === 0) return '';
-  if (staves.length === 1) return headHint(staves[0], clef);
+  if (staves.length === 1) return headHint(range ? inRange(staves[0], clef, range[0], range[1]) : staves[0], clef);
   const a = headHint(staves[0], clef);
   const b = headHint(staves[1], clef2);
   return a && b ? `upper staff: ${a} / lower staff: ${b}` : '';
 }
 
 /** Natural note names of the heads, flattened (for comparing with a transcription). Pure. */
-export function headNames(staves: Head[][] | undefined, clef = 'treble', clef2 = 'bass'): string[][] {
-  return (staves ?? []).map((list, i) => list.map((h) => stepName(h.step, i === 1 ? clef2 : clef)));
+export function headNames(staves: Head[][] | undefined, clef = 'treble', clef2 = 'bass', range?: [string, string]): string[][] {
+  return (staves ?? []).map((list, i) => (range && staves?.length === 1 ? inRange(list, clef, range[0], range[1]) : list).map((h) => stepName(h.step, i === 1 ? clef2 : clef)));
 }
