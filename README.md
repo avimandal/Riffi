@@ -100,11 +100,16 @@ tests/
 ## Tests
 
 ```bash
-npm test                     # ~85 unit/engine tests (about 25 s; the piano model runs on the CPU)
+npm test                     # ~200 unit/engine tests (about 25 s; the piano model runs on the CPU)
 npm run e2e                  # Playwright (needs Chromium: npx playwright install chromium)
 php tests/php/unit.php       # PHP helpers and both provider adapters
 bash tests/php/integration.sh  # PHP endpoint end to end against fake Gemini and Claude APIs
+
+# Sheet-reading accuracy against the real AI (not run in CI; needs a key in the environment only):
+GEMINI_API_KEY=… npx playwright test -c playwright.live.config.ts
 ```
+
+**Sheet-reading accuracy.** Every photo in `tests/fixtures/sheets/` with a hand-made `<name>.reference.json` beside it is a fixture. The live run reads each one with the real pipeline (staff detection and engravings in Chromium, the real `api/omr.php`, the real AI) and prints a per-bar table of pitch and rhythm accuracy plus whether the key, time signature and pickup are right, for the **first read only** and **after the double-check**. It saves every reply (no key, no images) to `tests/fixtures/sheets/recordings/`, and the unit tests replay those recordings through the pipeline in CI, so the numbers can't drift unnoticed. To add a fixture: drop in a photo and write its reference (sounding pitches, as in `hermans-hornpipe.reference.json`), then run the live test. Options: `GEMINI_MODEL`, `GEMINI_RPM` (raise for a paid key), `RIFFI_PROVIDER=claude` with `ANTHROPIC_API_KEY`.
 
 What's covered (SPEC §15):
 
@@ -190,12 +195,14 @@ Copy `api/config.sample.php`, choose the AI provider and fill in its key, and ch
 | `ANTHROPIC_API_KEY` | | Only needed for `PROVIDER => 'claude'` ([console.anthropic.com](https://console.anthropic.com/)) |
 | `CLAUDE_MODEL` | `claude-sonnet-5-5` | |
 | `MAX_PAGES` / `MAX_BYTES_PER_PAGE` | 8 / 3 MB | |
-| `RATE_LIMIT_PER_HOUR` | 40 | Pages read per IP per hour (Riffi's own limit) |
+| `RATE_LIMIT_PER_HOUR` | 400 | Requests per IP per hour (Riffi's own limit; a busy page is ~20–25 requests) |
+| `GEMINI_RPM` / `CLAUDE_RPM` | 8 / 40 | Requests per minute to the AI, shared by the whole server. Keep under your provider's limit |
 | `TRUST_PROXY` | `false` | Set `true` behind Cloudflare so the limit counts each visitor, not Cloudflare |
 | `REQUEST_SECONDS` | 85 | Deadline for one page. Keep it under Cloudflare's 100 s |
 | `LOG_FILE` | `null` | Private error log; `null` = `riffi-logs/omr.log` next to the web root, `false` = off |
 | `DIAGNOSTICS` | `true` | Allows **Parents → Settings → Check music reader** |
-| `GEMINI_THINKING` | `low` | Gemini thinking level (`low` keeps one page well inside the deadline) |
+| `GEMINI_THINKING` | `medium` | Gemini thinking level for reading and double-checking each line |
+| `GEMINI_THINKING_OVERVIEW` | `low` | Thinking level for the quick look at the whole page |
 
 Both providers get the same prompt, the same validation and the same single retry. If Gemini's free tier runs out of quota (HTTP 429) or either provider is overloaded, kids see "Riffi's music reader is busy, try again in a minute." The free tier has per-minute and per-day request limits, so a busy household may occasionally hit them; switching `PROVIDER` to `claude` (paid) avoids that.
 
@@ -330,12 +337,19 @@ Metronome (Web Audio lookahead scheduler) → click times                       
                                                                      practice log (IndexedDB)
 ```
 
-- **Sheet reading:** photos are straightened, cropped and shrunk to ≤2000 px JPEGs (q 0.85) in the browser, then sent to `api/omr.php` **one page per request**, so no single request runs long.
-  - **Compact notes, not MusicXML:** the AI answers in *Riffi Notation*, a small JSON format (one string of tokens per bar, e.g. `"D5e. E5s 3( F#5e G5e A5e ) B5q"`), about a tenth the size of MusicXML. The browser checks each bar's beats and builds the MusicXML itself (`src/sheet/notation.ts`). Fewer output tokens is the main reason a dense page now fits well inside the time limits.
-  - **Streaming:** the endpoint streams the provider's answer (Gemini `streamGenerateContent`, Claude streamed Messages) and streams its own reply to the browser as JSON lines: keep-alive pings every few seconds, "bars found so far" progress, then the result or an error. Keep-alives stop Cloudflare and LiteSpeed treating the request as idle, and a hard deadline (`REQUEST_SECONDS`) ends it cleanly before Cloudflare's 100 s cut-off.
-  - **Validation and retry:** the result must be valid notation. If it isn't, the endpoint retries once (if there's time) with the problems listed, then gives up with a friendly message. Doubtful spots come back as warnings for the review screen.
-  - **Providers:** one small adapter per AI behind the same interface: **Google Gemini** (the default; low thinking level, JSON output) or **Anthropic Claude**. With Claude, the request opts in to the API's server-side refusal fallback (`fallbacks: "default"`); set `USE_FALLBACKS` to `false` to turn that off.
+- **Sheet reading, line by line** (`src/sheet/reader.ts`):
+  1. **Find the lines.** In the browser, each photo is straightened and cropped by the parent, then kept at full resolution (up to 4096 px). `src/sheet/staffDetect.ts` finds every staff (five evenly spaced lines, followed across the page so tilt and curl don't matter; pairs of staves for piano) and crops each line of music at full resolution.
+  2. **Look at the whole page once** (a small picture): title, composer, key, time signature, tempo, pickup bar and repeats.
+  3. **Read each line on its own**, in order, carrying the key, time signature and bar numbers from line to line (and the pickup, on the first line). Each line is a separate short request (well inside Cloudflare's 100 s and the host's PHP limits), with `medium` thinking.
+  4. **Free code checks** (`src/sheet/checks.ts`): every bar adds up to the time signature (pickups and a closing short bar excepted), the key signature is there and actually applied (an F in D major without its sharp is caught), notes are within the instrument's range, and tuplets have the right number of notes.
+  5. **Double-check** (up to two rounds per line, stopping early when nothing is wrong): the line's transcription is engraved with the app's own renderer (OSMD, one system, every bar numbered) and a fresh request gets only the photo of the line, that engraving, the transcription and the code checks' problems. It lists mismatches (pitch, direction, accidentals, rhythm, beaming, triplets, ties, rests, pickup) and returns a corrected line. A correction is kept unless it breaks more bars than it fixes.
+  6. **Review highlights:** bars that still fail a check, or that the reader said it wasn't sure about, are outlined on the review screen with the reason, so you know where to look.
+  - **Pacing:** a page is ~20 requests, so the app paces itself (`GEMINI_RPM` per minute, told to it by `?info`) and the server keeps a shared per-minute count too. When the AI says it's busy (HTTP 429), the app waits as long as Gemini's `retryDelay` asks (counting down on screen) and tries again. If the free tier's *daily* quota is used up, it says so instead. On the free tier a dense page takes a few minutes.
+  - **Notation:** the AI answers in *Riffi Notation*, a compact JSON format (one string of tokens per bar, e.g. `"D5e. E5s 3( F#5e G5e A5e ) B5q"`); the browser builds the MusicXML itself (`src/sheet/notation.ts`).
+  - **Streaming:** each request streams (keep-alive pings, "bars so far" progress, then the result or a categorised error with a reference code), with a hard deadline (`REQUEST_SECONDS`).
+  - **Providers:** **Google Gemini** (the default) or **Anthropic Claude**, behind one interface. If the server has keys for both, **Parents → Settings → Check music reader → Compare music readers** chooses which reads the next scans on that device. With Claude, the request opts in to the API's server-side refusal fallback (`fallbacks: "default"`); set `USE_FALLBACKS` to `false` to turn that off.
   - Nothing is stored on the server except the private error log (no images, no music). You can also open MusicXML files directly (`.mxl` zipped files are unpacked in the browser).
+  - **Instrument:** adding and practising default to the current kid's main instrument.
 - **Review:** the music is drawn with OpenSheetMusicDisplay next to the photo thumbnails. Tap a note (or use the arrow keys) to move it up or down, change its length, turn it into a rest, delete it, or add a note or rest after it. You can also change the key, time signature and title. "Looks good!" saves it.
 - **Metronome:** clicks are scheduled on the audio clock with a lookahead (the timer only wakes the scheduler). There's a one-bar count-in, an accent on beat 1, a short high woodblock click (mostly above 4 kHz), and a big bouncing dot that always shows.
 - **iPhone silent switch and loudspeaker** (`src/audio/session.ts`): Safari normally mutes web audio when the ringer switch is on silent. Where Safari has the Audio Session API (iOS 16.4+/17), Riffi sets `navigator.audioSession.type` to `playback` when sound starts, and to `play-and-record` just before the mic opens (that also plays through the switch, and keeps output on the loudspeaker rather than the earpiece). It goes back to `playback` when the mic closes. On older iOS it plays a silent looping `<audio>` element from the same tap instead, re-kicks it after the mic opens, and pauses it when the app is hidden so it doesn't linger in Now Playing. This covers the practice metronome, the Tuner & Metronome (clicks, reference tone, chime) and the note preview on the review screen. Android and desktop are left alone.
@@ -363,7 +377,8 @@ Metronome (Web Audio lookahead scheduler) → click times                       
 - Tempo is a single BPM per run. Tempo changes written mid-piece are not followed, but they don't break anything.
 - With repeats, a note that was played differently on each pass shows its trickiest result on the coloured sheet.
 - iPhone/iPad Safari has no vibration, so the "vibrate" metronome option only appears where it's supported (Android).
-- Sheet reading is tested against fake Gemini and Claude APIs (replaying a hand transcription of `tests/fixtures/sheets/hermans-hornpipe.webp`, a dense violin page); it hasn't been run against the real services from CI (no keys there).
+- Sheet reading is tested in CI against fake Gemini and Claude APIs and by replaying recorded real runs (see *Sheet-reading accuracy* under Tests); CI itself has no API keys.
+- On Gemini's free tier, reading a dense page line by line takes a few minutes because of the per-minute request limit.
 - Engine and scoring tests use synthetic audio. Real instruments, rooms and microphones vary, so the real-world acceptance checks in SPEC §17 (a phone's speaker at normal volume, a mid-range tablet with two-hand piano, installing on an iPad) still need doing on real devices.
 - Data is stored on one device only. Use **Parents → Backup** to move it. Clearing the browser's site data deletes it.
 

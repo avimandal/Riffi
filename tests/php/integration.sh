@@ -40,6 +40,10 @@ start_app missing gemini missing
 start_app badkey gemini badkey
 start_app oldthink gemini oldthink
 start_app claude claude claude-sonnet-5-5
+start_app lines gemini lines
+start_app pace gemini fast "'GEMINI_RPM' => 2,"
+start_app daily gemini daily
+start_app perminute gemini perminute
 php -S 127.0.0.1:8791 -t tests/php >/dev/null 2>&1 &
 sleep 1
 
@@ -65,7 +69,7 @@ RESULT=$(last_line "$OUT")
 [ "$(echo "$RESULT" | field score.title)" = "Herman's hornpipe" ] || fail "wrong title"
 [ "$(echo "$RESULT" | php -r '$j=json_decode(stream_get_contents(STDIN),true); echo count($j["score"]["measures"]);')" = "22" ] || fail "expected 22 measures"
 [ "$(echo "$RESULT" | field warnings | grep -c 'highlighter')" = "1" ] || fail "missing warnings"
-php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-ok.json"),true); exit($l["method"]==="streamGenerateContent" && $l["key"]==="AIzaTESTKEY-0123456789abcdefghijkl" && $l["roles"]===["user","model","user"] && $l["images"]===1 && $l["system"] && $l["mime"]==="application/json" && $l["thinking"]===["thinkingLevel"=>"low"] ? 0 : 1);' || fail "Gemini request was not shaped as expected"
+php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-ok.json"),true); exit($l["method"]==="streamGenerateContent" && $l["key"]==="AIzaTESTKEY-0123456789abcdefghijkl" && $l["roles"]===["user","model","user"] && $l["images"]===1 && $l["system"] && $l["mime"]==="application/json" && $l["thinking"]===["thinkingLevel"=>"medium"] ? 0 : 1);' || fail "Gemini request was not shaped as expected"
 echo "  ok   gemini: dense page streams progress, retries once on invalid notation, returns 22 bars + warnings"
 
 OUT=$(scan $PORT_fast)
@@ -100,6 +104,59 @@ RESULT=$(last_line "$OUT")
 [ "$(echo "$RESULT" | field score.title)" = "Tiny tune" ] || fail "claude: expected a result: $OUT"
 php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-mock-last.json"),true); exit($l["messages"]===3 && $l["stream"]===true && $l["model"]==="claude-sonnet-5-5" && $l["fallbacks"]==="default" && $l["headers"]["x-api-key"]==="sk-ant-test-0123456789" && $l["images"]===1 ? 0 : 1);' || fail "Claude request was not shaped as expected"
 echo "  ok   claude: streams, retries once, returns the score"
+
+# --- Line by line: overview, one line, double-check ---
+step() { # port mode [extra curl args…] → body, then status
+  local port=$1 mode=$2; shift 2
+  curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F "mode=$mode" -F 'instrument=violin' "$@" "http://127.0.0.1:$port/omr.php"
+}
+IMG="pages[]=@tests/fixtures/sheets/hermans-hornpipe.webp;type=image/webp"
+OUT=$(step $PORT_lines overview -F "$IMG" -F page=1 -F pages=1)
+R=$(last_line "$OUT")
+[ "$(echo "$R" | field overview.key)" = "2" ] && [ "$(echo "$R" | field overview.time)" = "4/4" ] && [ "$(echo "$R" | field overview.pickup)" = "1" ] && [ "$(echo "$R" | field overview.pickup_notes)" = "A5e" ] || fail "overview: $R"
+[ "$(echo "$R" | field provider)" = "gemini" ] || fail "overview: provider not named"
+php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["thinking"]===["thinkingLevel"=>"low"] && $l["images"]===1 ? 0 : 1);' || fail "overview should think 'low'"
+echo "  ok   overview: key, time signature and pickup from the whole page (quick, low thinking)"
+
+OUT=$(step $PORT_lines line -F "$IMG" -F line=3 -F lines=7 -F key=2 -F time=4/4 -F first_bar=7)
+R=$(last_line "$OUT")
+[ "$(echo "$R" | php -r '$j=json_decode(stream_get_contents(STDIN),true); echo count($j["line"]["measures"]);')" = "3" ] || fail "line: expected 3 bars: $R"
+echo "$OUT" | grep -q '"type":"progress","bars":3' || fail "line: no bar progress"
+php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["thinking"]===["thinkingLevel"=>"medium"] ? 0 : 1);' || fail "line should think 'medium'"
+echo "  ok   line: one line of music read on its own, with the carried key and time"
+
+ENGRAVING="$TMP/engraving.png"
+php -r 'echo base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");' > "$ENGRAVING"
+WRONG='{"measures":[{"n":1,"key":2,"time":"4/4","s1":"F#5s D5s A4s F#5s E5s C#5s A4s D5s B4s G4s D4s B4s A4s F#4s D4s F#4s"}]}'
+OUT=$(step $PORT_lines check -F "$IMG" -F "pages[]=@$ENGRAVING;type=image/png" -F line=1 -F lines=7 -F key=2 -F time=4/4 -F "transcription=$WRONG" -F 'problems=["Bar 1: example problem"]' -F round=1)
+R=$(last_line "$OUT")
+[ "$(echo "$R" | field check.mismatches.0.what)" = "pickup" ] || fail "check: expected a pickup mismatch: $R"
+[ "$(echo "$R" | field check.measures.0.pickup)" = "1" ] || fail "check: expected corrected bars: $R"
+php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["images"]===2 ? 0 : 1);' || fail "check: photo and engraving should both be sent"
+OUT=$(step $PORT_lines check -F "$IMG" -F line=1 -F "transcription=$WRONG")
+[ "$(echo "$OUT" | tail -1)" = "400" ] || fail "check without the engraving should be refused"
+OUT=$(step $PORT_lines check -F "$IMG" -F "pages[]=@$ENGRAVING;type=image/png" -F 'transcription=nope')
+[ "$(last_line "$OUT" | field code)" = "bad_transcription" ] || fail "check with a broken transcription: $OUT"
+echo "  ok   check: photo + engraving + transcription + code problems → mismatches and corrected bars"
+
+# --- Pace and the provider's own limits ---
+for i in 1 2; do OUT=$(step $PORT_pace line -F "$IMG"); [ "$(echo "$OUT" | tail -1)" = "200" ] || fail "pace: request $i should go through"; done
+OUT=$(step $PORT_pace line -F "$IMG")
+[ "$(echo "$OUT" | tail -1)" = "429" ] || fail "pace: third request in a minute should wait: $OUT"
+[ "$(echo "$OUT" | head -1 | field code)" = "busy" ] && [ "$(echo "$OUT" | head -1 | field retry_after)" -gt 0 ] || fail "pace: expected busy with retry_after: $OUT"
+OUT=$(step $PORT_perminute line -F "$IMG")
+[ "$(last_line "$OUT" | field code)" = "busy" ] && [ "$(last_line "$OUT" | field retry_after)" = "7" ] || fail "per-minute 429 should pass on Gemini's retryDelay: $OUT"
+OUT=$(step $PORT_daily line -F "$IMG")
+[ "$(last_line "$OUT" | field code)" = "quota" ] || fail "daily 429 should be 'quota': $OUT"
+echo "  ok   pace: GEMINI_RPM spaces requests (busy + retry_after); Gemini's retryDelay passed on; daily quota → quota"
+
+# --- Choosing the provider per scan, and ?info ---
+OUT=$(curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F provider=claude -F "$IMG" "http://127.0.0.1:$PORT_fast/omr.php")
+[ "$(last_line "$OUT" | field score.title)" = "Tiny tune" ] || fail "provider=claude should use Claude when its key is set: $OUT"
+INFO=$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1")
+[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] || fail "info: $INFO"
+! echo "$INFO" | grep -q 'AIza\|sk-ant' || fail "info leaked a key"
+echo "  ok   provider: a parent can pick Claude per scan when both keys are set; ?info lists providers (no keys)"
 
 # --- Private log: useful, and never contains the key ---
 grep -q '"event":"scan_ok"' "$TMP/logs/ok.log" || fail "no scan_ok in the log"

@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { kindForCode, kindForStatus, OmrError, readSheetMusic } from '../../src/sheet/omrClient';
+import { callReader, kindForCode, kindForStatus, readerInfo, type ReaderRequest } from '../../src/sheet/omrClient';
 import { adviseFromReport } from '../../src/sheet/readerCheck';
-import { parseMusicXml } from '../../src/sheet/musicxml';
-import type { RnScore } from '../../src/sheet/notation';
-
-const hornpipe = JSON.parse(readFileSync(join(process.cwd(), 'tests/fixtures/sheets/hermans-hornpipe.rn.json'), 'utf8')) as RnScore;
 
 /** A Response that streams NDJSON lines in small, uneven chunks (like a real proxy). */
 function ndjson(lines: object[], opts: { cut?: boolean } = {}): Response {
@@ -28,55 +22,67 @@ function fakeFetch(responses: (() => Response)[]): typeof fetch {
 
 const blob = new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: 'image/jpeg' });
 
-describe('reading pages over the stream', () => {
-  it('reads two pages one request at a time, reports progress, and builds MusicXML', async () => {
-    const page1 = { ...hornpipe, measures: hornpipe.measures.slice(0, 11), warnings: undefined };
-    const page2 = { measures: hornpipe.measures.slice(11) };
-    const progress: string[] = [];
-    const res = await readSheetMusic(
-      [blob, blob],
-      'violin',
-      (p) => progress.push(`${p.page + 1}/${p.pages}:${p.stage}:${p.bars}`),
-      fakeFetch([
-        () => ndjson([{ type: 'start', ref: 'aaa111', pad: '   ' }, { type: 'progress', bars: 5 }, { type: 'ping' }, { type: 'progress', bars: 11 }, { type: 'result', score: page1, warnings: ['Bar 4: smudge'], ref: 'aaa111' }]),
-        () => ndjson([{ type: 'start', ref: 'bbb222' }, { type: 'progress', bars: 11 }, { type: 'result', score: page2, warnings: [], ref: 'bbb222' }]),
-      ]),
-    );
-    expect(progress).toEqual(['1/2:sending:0', '1/2:reading:0', '1/2:reading:5', '1/2:reading:11', '2/2:sending:0', '2/2:reading:0', '2/2:reading:11']);
-    const s = parseMusicXml(res.musicxml);
-    expect(s.measures).toHaveLength(22);
-    expect(s.title).toBe("Herman's hornpipe");
-    expect(res.warnings).toEqual(['Bar 4: smudge']);
+describe('one reader request over the stream', () => {
+  const req: ReaderRequest = { mode: 'line', images: [{ blob, name: 'line-1-1.jpg' }], fields: { line: 1, lines: 7, key: 2, time: '4/4', pickup: undefined } };
+  const call = (f: typeof fetch, provider?: string) => callReader(req, { instrument: 'violin', provider, fetchImpl: f });
+
+  it('sends the mode, fields and image, streams progress and returns the result', async () => {
+    let sent: FormData | undefined;
+    const bars: number[] = [];
+    const res = await callReader(req, {
+      instrument: 'violin',
+      provider: 'claude',
+      onBars: (b) => bars.push(b),
+      fetchImpl: (async (_u: string, init: RequestInit) => {
+        sent = init.body as FormData;
+        return ndjson([{ type: 'start', ref: 'aaa111', pad: '   ' }, { type: 'progress', bars: 1 }, { type: 'ping' }, { type: 'progress', bars: 3 }, { type: 'result', line: { measures: [{ n: 1, s1: 'D5w' }] }, provider: 'claude', ref: 'aaa111' }]);
+      }) as unknown as typeof fetch,
+    });
+    expect(bars).toEqual([1, 3]);
+    expect(res).toMatchObject({ line: { measures: [{ n: 1, s1: 'D5w' }] }, provider: 'claude', ref: 'aaa111' });
+    expect(sent?.get('mode')).toBe('line');
+    expect(sent?.get('provider')).toBe('claude');
+    expect(sent?.get('key')).toBe('2');
+    expect(sent?.has('pickup')).toBe(false);
+    expect((sent?.get('pages[]') as File).name).toBe('line-1-1.jpg');
   });
 
-  it('turns a streamed error into a category with its reference', async () => {
-    const run = readSheetMusic([blob], 'violin', undefined, fakeFetch([() => ndjson([{ type: 'start', ref: 'c0ffee' }, { type: 'error', code: 'busy', message: 'busy', ref: 'c0ffee' }])]));
-    await expect(run).rejects.toMatchObject({ kind: 'busy', ref: 'c0ffee', code: 'busy' });
+  it('turns a streamed error into a category with its reference and wait time', async () => {
+    const run = call(fakeFetch([() => ndjson([{ type: 'start', ref: 'c0ffee' }, { type: 'error', code: 'busy', message: 'busy', retry_after: 17, ref: 'c0ffee' }])]));
+    await expect(run).rejects.toMatchObject({ kind: 'busy', ref: 'c0ffee', code: 'busy', retryAfter: 17 });
   });
 
   it("treats Cloudflare's HTML 524 as a timeout", async () => {
-    const run = readSheetMusic([blob], 'violin', undefined, fakeFetch([() => new Response('<html>A timeout occurred</html>', { status: 524, headers: { 'content-type': 'text/html' } })]));
+    const run = call(fakeFetch([() => new Response('<html>A timeout occurred</html>', { status: 524, headers: { 'content-type': 'text/html' } })]));
     await expect(run).rejects.toMatchObject({ kind: 'timeout', code: 'http_524' });
   });
 
-  it('reads our own JSON errors (sent before streaming starts)', async () => {
-    const run = readSheetMusic([blob], 'violin', undefined, fakeFetch([() => new Response(JSON.stringify({ error: 'x', code: 'not_configured', ref: 'abc123' }), { status: 500, headers: { 'content-type': 'application/json' } })]));
+  it('reads our own JSON errors (sent before streaming starts), including the pace wait', async () => {
+    const run = call(fakeFetch([() => new Response(JSON.stringify({ error: 'x', code: 'not_configured', ref: 'abc123' }), { status: 500, headers: { 'content-type': 'application/json' } })]));
     await expect(run).rejects.toMatchObject({ kind: 'notConfigured', ref: 'abc123' });
+    const paced = call(fakeFetch([() => new Response(JSON.stringify({ error: 'x', code: 'busy', retry_after: 12 }), { status: 429, headers: { 'content-type': 'application/json' } })]));
+    await expect(paced).rejects.toMatchObject({ kind: 'busy', retryAfter: 12 });
+  });
+
+  it("knows the free tier's daily limit is a different thing", async () => {
+    const run = call(fakeFetch([() => ndjson([{ type: 'error', code: 'quota', ref: 'q1' }])]));
+    await expect(run).rejects.toMatchObject({ kind: 'quota' });
   });
 
   it('notices a stream that was cut off before the result', async () => {
-    const run = readSheetMusic([blob], 'violin', undefined, fakeFetch([() => ndjson([{ type: 'start', ref: 'dead00' }, { type: 'progress', bars: 3 }], { cut: true })]));
+    const run = call(fakeFetch([() => ndjson([{ type: 'start', ref: 'dead00' }, { type: 'progress', bars: 3 }], { cut: true })]));
     await expect(run).rejects.toMatchObject({ kind: 'timeout', ref: 'dead00', code: 'stream_cut' });
   });
 
-  it('rejects a result the app cannot use', async () => {
-    const run = readSheetMusic([blob], 'violin', undefined, fakeFetch([() => ndjson([{ type: 'result', score: { measures: [{ s1: 'Q9' }] } }])]));
-    await expect(run).rejects.toBeInstanceOf(OmrError);
+  it('asks the server which providers are set up', async () => {
+    const info = await readerInfo(fakeFetch([() => new Response(JSON.stringify({ providers: ['gemini', 'claude'], default: 'gemini', rpm: { gemini: 8, claude: 40 } }), { headers: { 'content-type': 'application/json' } })]));
+    expect(info).toEqual({ providers: ['gemini', 'claude'], default: 'gemini', rpm: { gemini: 8, claude: 40 } });
+    expect(await readerInfo(fakeFetch([() => new Response('nope', { status: 404 })]))).toBeNull();
   });
 
   it('maps every server code to a category', () => {
-    expect(['busy', 'timeout', 'blocked', 'model_not_found', 'bad_key', 'region', 'unreadable', 'not_configured', 'rate_limited', 'too_big', 'provider_error'].map(kindForCode)).toEqual([
-      'busy', 'timeout', 'blocked', 'settings', 'settings', 'settings', 'unreadable', 'notConfigured', 'rateLimited', 'tooBig', 'server',
+    expect(['busy', 'quota', 'timeout', 'blocked', 'model_not_found', 'bad_key', 'region', 'unreadable', 'not_configured', 'rate_limited', 'too_big', 'provider_error'].map(kindForCode)).toEqual([
+      'busy', 'quota', 'timeout', 'blocked', 'settings', 'settings', 'settings', 'unreadable', 'notConfigured', 'rateLimited', 'tooBig', 'server',
     ]);
     expect([413, 429, 502, 504, 522, 524].map(kindForStatus)).toEqual(['tooBig', 'rateLimited', 'server', 'timeout', 'timeout', 'timeout']);
   });

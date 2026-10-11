@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DIFFICULTIES, INSTRUMENTS, TEMPO_MAX, TEMPO_MIN, type Difficulty, type Instrument, type MetronomeMode, type PracticeMode } from '../../config';
+import { DIFFICULTIES, INSTRUMENTS, TEMPO_MAX, TEMPO_MIN, type Difficulty, type MetronomeMode, type PracticeMode } from '../../config';
 import { t } from '../../i18n';
 import { useApp } from '../../app/state';
+import { useKidInstrument } from '../../app/useKidInstrument';
 import { navigate } from '../../app/router';
 import { Icon } from '../../components/Icon';
 import { INSTRUMENT_ICON } from '../../components/instrumentIcons';
@@ -30,7 +31,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
   const [piece, setPiece] = useState<Piece | null | undefined>(undefined);
   const score = useMemo(() => (piece ? safeParse(piece.musicxml) : null), [piece]);
 
-  const [instrument, setInstrument] = useState<Instrument>(profile?.instrument ?? 'violin');
+  const [instrument, setInstrument] = useKidInstrument();
   const [difficulty, setDifficulty] = useState<Difficulty>(profile?.difficulty ?? 'normal');
   const [mode, setMode] = useState<PracticeMode>(query.get('mode') === 'learn' ? 'learn' : 'playalong');
   const [bpm, setBpm] = useState<number | null>(null);

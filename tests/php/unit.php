@@ -15,12 +15,13 @@ function check(string $name, bool $ok): void
     }
 }
 
-$fixture = (string) file_get_contents(__DIR__ . '/../fixtures/sheets/hermans-hornpipe.rn.json');
+$fixture = (string) file_get_contents(__DIR__ . '/../fixtures/sheets/hermans-hornpipe.reference.json');
 
 // Riffi Notation validation
 [$score, $problem] = riffi_validate_score("Here you go:\n```json\n$fixture\n```");
 check('accepts the dense fixture page (in a code fence)', $problem === null && count($score['measures']) === 22);
-check('keeps the reader\'s warnings', count($score['warnings']) === 2);
+[$withWarnings] = riffi_validate_score('{"measures":[{"n":1,"s1":"D5w"}],"warnings":["Bar 4: smudge","Bar 7: pencil"]}');
+check('keeps the reader\'s warnings', count($withWarnings['warnings']) === 2);
 check('rejects an empty reply', riffi_validate_score('')[1] !== null);
 check('rejects non-JSON', riffi_validate_score('<score-partwise/>')[1] !== null);
 check('rejects a score with no measures', str_contains((string) riffi_validate_score('{"measures": []}')[1], 'measures'));
@@ -129,6 +130,45 @@ check('gemini is the default provider', riffi_provider($pc) instanceof RiffiGemi
 $pc['PROVIDER'] = 'claude';
 $pc['ANTHROPIC_API_KEY'] = 'a';
 check('claude when chosen', riffi_provider($pc) instanceof RiffiClaude);
+
+// --- Line by line ---
+[$r, $daily] = riffi_retry_info('{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"37s"},{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}]}}');
+check('reads Gemini\'s retryDelay', $r === 37 && $daily === false);
+[$r, $daily] = riffi_retry_info('{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}');
+check('spots a used-up daily quota', $daily === true);
+check('no retry info in a plain error', riffi_retry_info('<html>busy</html>') === [0, false]);
+
+$parts = riffi_line_parts(['image/jpeg', 'x'], 'violin', ['key' => 2, 'time' => '4/4', 'clef' => 'treble', 'first_bar' => 1, 'line' => 1, 'lines' => 7, 'page' => 1, 'pages' => 1, 'pickup' => true, 'pickup_notes' => 'A5e']);
+$text = end($parts)['text'];
+check('line prompt carries the key', str_contains($text, '2 sharps (D major'));
+check('line prompt carries the time and bar length', str_contains($text, '4/4, so each full bar adds up to 4 quarter notes'));
+check('line prompt asks for the pickup', str_contains($text, 'pickup') && str_contains($text, 'A5e'));
+check('line prompt says which line', str_contains($text, 'line 1 of 7'));
+$parts = riffi_line_parts(['image/jpeg', 'x'], 'violin', ['key' => 2, 'time' => '6/8', 'clef' => null, 'first_bar' => 9, 'line' => 3, 'lines' => 7, 'page' => 1, 'pages' => 1, 'pickup' => null, 'pickup_notes' => '']);
+check('later lines do not mention a pickup', !str_contains(end($parts)['text'], 'pickup'));
+check('6/8 is 3 quarter notes', riffi_bar_beats('6/8') === '3 quarter notes');
+$cp = riffi_check_parts(['image/jpeg', 'a'], ['image/png', 'b'], 'violin', ['key' => 2, 'time' => '4/4'], '{"measures":[]}', ['Bar 3 adds up to 3 beats instead of 4 beats.']);
+check('check sends the photo then the engraving', $cp[1]['image'][0] === 'image/jpeg' && $cp[3]['image'][0] === 'image/png');
+check('check lists the code problems', str_contains(end($cp)['text'], 'Bar 3 adds up to 3 beats'));
+check('rules explain beams and ledger lines', str_contains(riffi_rn_rules(), '2 = 16th') && str_contains(riffi_rn_rules(), 'first ledger line'));
+
+[$ov] = riffi_validate_overview('{"key": 2, "time": "C", "pickup": true, "pickup_notes": "A5e", "lines": 7, "first_bars": [null, 4]}');
+check('overview: C means 4/4', $ov['time'] === '4/4' && $ov['key'] === 2 && $ov['pickup'] === true && $ov['first_bars'] === [null, 4]);
+[$ov] = riffi_validate_overview('{"key": 12, "time": "four", "pickup_notes": "nonsense"}');
+check('overview: drops impossible values', $ov['key'] === null && $ov['time'] === null && $ov['pickup_notes'] === '');
+[, $problem] = riffi_validate_line('{"measures": [{"n": 1, "s1": "F#5 D5s"}]}');
+check('line: rejects a note without a length', $problem !== null);
+[$line] = riffi_validate_line('{"measures": [{"n": 1, "s1": "R"}], "unsure": [1, "x"], "warnings": ["a", "b", "c", "d"]}');
+check('line: whole-bar rest is fine, lists cleaned', $line['unsure'] === [1] && count($line['warnings']) === 3);
+[$c] = riffi_validate_check('{"mismatches": []}');
+check('check: nothing wrong needs no bars', $c['mismatches'] === [] && $c['measures'] === null);
+[, $problem] = riffi_validate_check('{"mismatches": [{"bar": 1, "what": "pitch", "detail": "x"}]}');
+check('check: mismatches need corrected bars', $problem !== null);
+
+$both = ['PROVIDER' => 'gemini', 'GEMINI_API_KEY' => 'g', 'ANTHROPIC_API_KEY' => 'a'] + riffi_default_config();
+check('lists configured providers, default first', riffi_configured_providers($both) === ['gemini', 'claude'] && riffi_configured_providers(['PROVIDER' => 'claude'] + $both) === ['claude', 'gemini']);
+check('honours a per-scan provider choice', riffi_provider($both, 'claude') instanceof RiffiClaude);
+check('ignores a choice without a key', riffi_provider(['ANTHROPIC_API_KEY' => ''] + $both, 'claude') instanceof RiffiGemini);
 
 fwrite(STDOUT, $failures === 0 ? "All PHP unit tests passed\n" : "$failures PHP test(s) failed\n");
 exit($failures === 0 ? 0 : 1);

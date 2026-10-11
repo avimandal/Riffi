@@ -164,6 +164,38 @@ export class SheetRenderer {
     };
   }
 
+  /** The box around one bar (all its staves), relative to the host. */
+  measureRect(measureIndex: number): DOMRect | null {
+    const row = this.osmd.GraphicSheet?.MeasureList?.[measureIndex];
+    const svg = this.host.querySelector('svg');
+    if (!row || !svg) return null;
+    const scale = OSMD_UNIT_PX * this.osmd.zoom;
+    const svgRect = svg.getBoundingClientRect();
+    const h = this.host.getBoundingClientRect();
+    let left = Infinity;
+    let right = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const gm of row) {
+      const box = gm?.PositionAndShape;
+      if (!box) continue;
+      const x = box.AbsolutePosition.x;
+      const y = box.AbsolutePosition.y;
+      left = Math.min(left, x + box.BorderLeft);
+      right = Math.max(right, x + box.BorderRight);
+      // At least the staff itself (4 units = the five lines) plus a little room.
+      top = Math.min(top, y + Math.min(box.BorderTop, -1.5));
+      bottom = Math.max(bottom, y + Math.max(box.BorderBottom, 5.5));
+    }
+    if (!Number.isFinite(left)) return null;
+    return new DOMRect(
+      svgRect.left - h.left + this.host.scrollLeft + left * scale,
+      svgRect.top - h.top + this.host.scrollTop + top * scale,
+      (right - left) * scale,
+      (bottom - top) * scale,
+    );
+  }
+
   /** Colour noteheads by result. Classes carry dashes/patterns too, so colour isn't the only cue. */
   mark(marks: Map<number, NoteMark>) {
     this.clearMarks();

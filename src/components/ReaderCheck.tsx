@@ -1,8 +1,43 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { t } from '../i18n';
-import { checkMusicReader, type CheckReport } from '../sheet/omrClient';
+import { useApp } from '../app/state';
+import { checkMusicReader, readerInfo, type CheckReport } from '../sheet/omrClient';
 import { adviseFromReport, type CheckLine } from '../sheet/readerCheck';
 import { Icon } from './Icon';
+
+const PROVIDER_NAMES: Record<string, string> = { gemini: 'Google Gemini', claude: 'Anthropic Claude' };
+
+/**
+ * Hidden unless the server has keys for more than one AI: choose which one reads
+ * the next scans on this device, to compare them on the same photo.
+ */
+function ProviderChoice() {
+  const { settings, updateSettings } = useApp();
+  const [providers, setProviders] = useState<{ list: string[]; def: string | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    void readerInfo().then((info) => live && info && setProviders({ list: info.providers, def: info.default }));
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!providers || providers.list.length < 2) return null;
+  return (
+    <details className="provider-choice" data-testid="provider-choice">
+      <summary>{t.parent.readerCompare}</summary>
+      <p className="muted">{t.parent.readerCompareHelp}</p>
+      <label htmlFor="reader-provider">{t.parent.readerProvider}</label>
+      <select id="reader-provider" value={settings.readerProvider ?? ''} onChange={(e) => void updateSettings({ readerProvider: e.target.value })}>
+        <option value="">{t.parent.readerProviderDefault(PROVIDER_NAMES[providers.def ?? ''] ?? providers.def ?? '')}</option>
+        {providers.list.map((p) => (
+          <option key={p} value={p}>
+            {PROVIDER_NAMES[p] ?? p}
+          </option>
+        ))}
+      </select>
+    </details>
+  );
+}
 
 /** Parents → Settings → Check music reader. */
 export function ReaderCheck() {
@@ -58,6 +93,7 @@ export function ReaderCheck() {
           </details>
         </>
       )}
+      <ProviderChoice />
     </div>
   );
 }

@@ -41,8 +41,8 @@ export function fitWithin(w: number, h: number, maxEdge: number): { w: number; h
   return { w: Math.max(1, Math.round(w * scale)), h: Math.max(1, Math.round(h * scale)) };
 }
 
-/** Rotate, crop and downscale a page; returns a JPEG blob. */
-export async function renderPage(page: PageDraft, maxEdge = UPLOAD_MAX_EDGE_PX, quality = UPLOAD_JPEG_QUALITY): Promise<Blob> {
+/** Rotate and crop a page onto a canvas, with the long edge at most `maxEdge`. */
+export async function renderPageCanvas(page: PageDraft, maxEdge: number): Promise<HTMLCanvasElement> {
   const img = await loadImage(page.file);
   const rotated = page.rotation === 90 || page.rotation === 270;
   const rw = rotated ? img.naturalHeight : img.naturalWidth;
@@ -69,10 +69,16 @@ export async function renderPage(page: PageDraft, maxEdge = UPLOAD_MAX_EDGE_PX, 
   ctx.rotate((page.rotation * Math.PI) / 180);
   ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
   ctx.restore();
+  return canvas;
+}
 
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode image'))), 'image/jpeg', quality),
-  );
+export function canvasToJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode image'))), 'image/jpeg', quality));
+}
+
+/** Rotate, crop and downscale a page; returns a JPEG blob. */
+export async function renderPage(page: PageDraft, maxEdge = UPLOAD_MAX_EDGE_PX, quality = UPLOAD_JPEG_QUALITY): Promise<Blob> {
+  return canvasToJpeg(await renderPageCanvas(page, maxEdge), quality);
 }
 
 /** Small thumbnail data URL to keep with the piece (device only). */

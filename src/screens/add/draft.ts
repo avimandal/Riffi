@@ -1,4 +1,5 @@
 import type { Instrument } from '../../config';
+import type { BarFlag } from '../../sheet/reader';
 import { db } from '../../data/db';
 
 /** A freshly read piece waiting on the review screen (kept in IndexedDB so a reload doesn't lose it). */
@@ -7,6 +8,8 @@ export interface Draft {
   warnings: string[];
   thumbnails: string[];
   instrument: Instrument;
+  /** Bars to look at: still failing a check, or the reader wasn't sure. */
+  flags?: BarFlag[];
 }
 
 export async function saveDraft(d: Draft) {
