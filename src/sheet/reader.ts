@@ -2,6 +2,7 @@ import type { Instrument } from '../config';
 import { barLength, checkLine, type BarProblem } from './checks';
 import { callReader, OmrError, type ReaderRequest, type ReaderResult } from './omrClient';
 import { headNames, lineHint } from './noteHeads';
+import { snapToHeads } from './snap';
 import { NotationError, notationToMusicXml, parseStaff, type RnMeasure, type RnScore } from './notation';
 import { RequestPacer } from './pacer';
 import type { PreparedPage } from './pagePrep';
@@ -94,6 +95,8 @@ export interface LineTrace {
   rounds: { mismatches: CheckLine['mismatches']; measures: RnMeasure[]; problems: BarProblem[]; accepted: boolean }[];
   final: RnMeasure[];
   checkSkipped?: string;
+  /** Notes moved onto the measured note heads (first read, then each accepted correction). */
+  snapped?: number[];
 }
 
 export interface ReadResult {
@@ -310,6 +313,10 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
         st.ctx = { ...ctx };
         let measures = normaliseLine(asArray<RnMeasure>(r?.measures), bar, st.firstOfPiece);
         if (st.firstOfPiece) measures = markPickup(measures, ctx.time);
+        // Pitch comes from the measured note heads; the model keeps rhythm, accidentals, ties, tuplets and bars.
+        const snapped = snapToHeads(measures, st.heads, ctx.key ?? 0);
+        measures = snapped.measures;
+        st.trace.snapped = [snapped.moved];
         st.measures = measures;
         st.unsure = new Set(asArray<number>(r?.unsure).map(Number));
         st.problems = checkLine(measures, lineCtx(st));
@@ -386,6 +393,9 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
         }
         let corrected = normaliseLine(asArray<RnMeasure>(c.measures), st.firstBar, st.firstOfPiece);
         if (st.firstOfPiece) corrected = markPickup(corrected, st.ctx.time);
+        const snapped = snapToHeads(corrected, st.heads, st.ctx.key ?? 0);
+        corrected = snapped.measures;
+        st.trace.snapped?.push(snapped.moved);
         const newProblems = checkLine(corrected, lineCtx(st));
         // Take the correction unless it breaks more bars than it fixes.
         const accepted = newProblems.length <= st.problems.length || corrected.length === st.measures.length;
