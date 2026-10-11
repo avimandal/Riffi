@@ -25,6 +25,8 @@ interface Recording {
   model: string;
   instrument: Instrument;
   lines: number[];
+  /** Note heads the browser measured on each page ([page][line][staff]), so pitch snapping replays too. */
+  heads?: { x: number; step: number }[][][][];
   responses: { mode: string; page: number; line: number | null; round: number | null; body: string }[];
   report: Record<'first' | 'final', { pitch: number; rhythm: number; key: boolean; time: boolean; pickup: boolean }>;
 }
@@ -56,7 +58,7 @@ describe('recorded runs of the real music reader', () => {
     it(`replays ${file} and gets the recorded accuracy`, async () => {
       const rec = JSON.parse(readFileSync(join(recDir, file), 'utf8')) as Recording;
       const ref = JSON.parse(readFileSync(join(dir, rec.fixture.replace(/\.[^.]+$/, '.reference.json')), 'utf8')) as RnScore & { uncertain?: number[] };
-      const pages = rec.lines.map((n) => ({ context: new Blob(['page']), lines: Array.from({ length: n }, () => new Blob(['line'])), detected: true }));
+      const pages = rec.lines.map((n, p) => ({ context: new Blob(['page']), lines: Array.from({ length: n }, () => new Blob(['line'])), heads: rec.heads?.[p], detected: true }));
       const result = await readPrepared(pages, {
         instrument: rec.instrument,
         send: replayer(rec),

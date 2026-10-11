@@ -95,10 +95,10 @@ for (const file of fixtures) {
         const { readSheetMusic } = (await import(/* @vite-ignore */ path)) as typeof import('../../src/sheet/readSheet');
         const blob = await (await fetch(`/__fixture/${file}`)).blob();
         const r = await readSheetMusic([{ id: 'p1', file: blob, previewUrl: '', rotation: 0 }], instrument as 'violin');
-        return { score: r.score, flags: r.flags, trace: r.trace, lines: r.pages.map((p) => p.lines.length) };
+        return { score: r.score, flags: r.flags, trace: r.trace, lines: r.pages.map((p) => p.lines.length), heads: r.pages.map((p) => p.heads ?? []) };
       },
       { file, instrument },
-    )) as Pick<ReadResult, 'score' | 'flags' | 'trace'> & { lines: number[] };
+    )) as Pick<ReadResult, 'score' | 'flags' | 'trace'> & { lines: number[]; heads: unknown[] };
     const seconds = Math.round((Date.now() - started) / 1000);
 
     const final = compareScores(result.score, ref);
@@ -121,6 +121,7 @@ for (const file of fixtures) {
           date: stamp,
           instrument,
           lines: result.lines,
+          heads: result.heads,
           seconds,
           responses: recorded,
           report: { first: summary(first), final: summary(final) },
