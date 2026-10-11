@@ -81,27 +81,30 @@ if ($model === 'lines') {
     if (str_contains($prompt, 'Do NOT transcribe the notes')) {
         $text = json_encode(['title' => $ref['title'], 'composer' => $ref['composer'], 'tempo' => $ref['tempo'], 'key' => 2, 'time' => '4/4', 'clef' => 'treble',
             'staves' => 1, 'pickup' => true, 'pickup_notes' => 'A5e', 'lines' => 7, 'first_bars' => [null, 4, 7, 10, 13, 16, 19], 'changes' => ['repeat from bar 1 to bar 16']]);
-    } elseif (preg_match('/ONE line \(system\) of music: line (\d+) of/', $prompt, $m)) {
-        $measures = $bars((int) $m[1]);
-        if ((int) $m[1] === 1) {
-            array_shift($measures); // forgets the pickup
-            $measures[0] += ['key' => 2, 'time' => '4/4'];
-        }
-        $text = json_encode(['measures' => $measures, 'unsure' => (int) $m[1] === 7 ? [21] : [], 'warnings' => []]);
-    } elseif (str_contains($prompt, 'Picture 2 is a computer engraving')) {
-        preg_match('/The transcription in Riffi Notation:\n(.*)\n/', $prompt, $m);
-        $sent = json_decode($m[1] ?? '{}', true)['measures'] ?? [];
-        $line = 1;
-        foreach ($ref['lines'] as $i => [$from]) {
-            if (($sent[0]['n'] ?? -1) >= $from || ($sent[0]['n'] ?? -1) === 1 && $i === 0) {
-                $line = $i + 1;
+    } elseif (preg_match('/ONE line \(system\) of music: line (\d+) of/', $prompt, $m) || preg_match('/are lines (\d+) to (\d+)/', $prompt, $m)) {
+        $out = [];
+        for ($line = (int) $m[1]; $line <= (int) ($m[2] ?? $m[1]); $line++) {
+            $measures = $bars($line);
+            if ($line === 1) {
+                array_shift($measures); // forgets the pickup
+                $measures[0] += ['key' => 2, 'time' => '4/4'];
             }
+            $out[] = ['line' => $line, 'measures' => $measures, 'unsure' => $line === 7 ? [21] : []];
         }
-        $want = $bars($line);
-        $same = array_column($sent, 's1') === array_column($want, 's1');
-        $text = json_encode($same
-            ? ['mismatches' => [], 'measures' => $sent, 'unsure' => $line === 7 ? [21] : []]
-            : ['mismatches' => [['bar' => 0, 'what' => 'pickup', 'detail' => 'The A5 eighth-note pickup before the repeat is missing.']], 'measures' => $want, 'unsure' => []]);
+        $text = json_encode(['lines' => $out, 'warnings' => []]);
+    } elseif (str_contains($prompt, 'computer engraving of our transcription')) {
+        preg_match_all('/Line (\d+) transcription \(Riffi Notation\):\n(.*)\n/', $prompt, $all, PREG_SET_ORDER);
+        $out = [];
+        foreach ($all as [, $line, $json]) {
+            $line = (int) $line;
+            $sent = json_decode($json, true)['measures'] ?? [];
+            $want = $bars($line);
+            $same = array_column($sent, 's1') === array_column($want, 's1');
+            $out[] = $same
+                ? ['line' => $line, 'mismatches' => [], 'measures' => null, 'unsure' => $line === 7 ? [21] : []]
+                : ['line' => $line, 'mismatches' => [['bar' => 0, 'what' => 'pickup', 'detail' => 'The A5 eighth-note pickup before the repeat is missing.']], 'measures' => $want, 'unsure' => []];
+        }
+        $text = json_encode(['lines' => $out]);
     }
 }
 

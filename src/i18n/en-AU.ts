@@ -142,8 +142,10 @@ export const strings = {
     tooMany: (max: number) => `That's the most pages we can read at once (${max}).`,
     preparing: (n: number, total: number) => `Getting page ${n} of ${total} ready…`,
     lookingAtPage: (n: number, total: number) => (total > 1 ? `Looking at page ${n} of ${total}…` : 'Looking at the whole page…'),
-    readingLine: (line: number, lines: number, page: number, pages: number) => `Reading line ${line} of ${lines}…${pages > 1 ? ` (page ${page} of ${pages})` : ''}`,
-    checkingLine: (line: number, round: number) => `Double-checking line ${line}…${round > 1 ? ' (one more look)' : ''}`,
+    readingLine: (line: number, to: number | undefined, lines: number, page: number, pages: number) =>
+      `${to && to > line ? (line === 1 && to === lines ? `Reading all ${lines} lines…` : `Reading lines ${line}–${to} of ${lines}…`) : `Reading line ${line} of ${lines}…`}${pages > 1 ? ` (page ${page} of ${pages})` : ''}`,
+    checkingLine: (line: number, to: number | undefined, round: number) =>
+      `${to && to > line ? `Double-checking lines ${line}–${to}…` : `Double-checking line ${line}…`}${round > 1 ? ' (one more look)' : ''}`,
     barsSoFar: (bars: number) => (bars > 0 ? `${bars} ${bars === 1 ? 'bar' : 'bars'} so far` : ''),
     waiting: (s: number) => `Waiting a moment for the music reader (${s} s)…`,
     readingNote: 'Every line is read carefully and then double-checked, so a page takes a few minutes.',

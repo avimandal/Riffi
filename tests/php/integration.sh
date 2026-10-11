@@ -69,7 +69,7 @@ RESULT=$(last_line "$OUT")
 [ "$(echo "$RESULT" | field score.title)" = "Herman's hornpipe" ] || fail "wrong title"
 [ "$(echo "$RESULT" | php -r '$j=json_decode(stream_get_contents(STDIN),true); echo count($j["score"]["measures"]);')" = "22" ] || fail "expected 22 measures"
 [ "$(echo "$RESULT" | field warnings | grep -c 'highlighter')" = "1" ] || fail "missing warnings"
-php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-ok.json"),true); exit($l["method"]==="streamGenerateContent" && $l["key"]==="AIzaTESTKEY-0123456789abcdefghijkl" && $l["roles"]===["user","model","user"] && $l["images"]===1 && $l["system"] && $l["mime"]==="application/json" && $l["thinking"]===["thinkingLevel"=>"medium"] ? 0 : 1);' || fail "Gemini request was not shaped as expected"
+php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-ok.json"),true); exit($l["method"]==="streamGenerateContent" && $l["key"]==="AIzaTESTKEY-0123456789abcdefghijkl" && $l["roles"]===["user","model","user"] && $l["images"]===1 && $l["system"] && $l["mime"]==="application/json" && $l["thinking"]===["thinkingLevel"=>"low"] ? 0 : 1);' || fail "Gemini request was not shaped as expected"
 echo "  ok   gemini: dense page streams progress, retries once on invalid notation, returns 22 bars + warnings"
 
 OUT=$(scan $PORT_fast)
@@ -118,26 +118,30 @@ R=$(last_line "$OUT")
 php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["thinking"]===["thinkingLevel"=>"low"] && $l["images"]===1 ? 0 : 1);' || fail "overview should think 'low'"
 echo "  ok   overview: key, time signature and pickup from the whole page (quick, low thinking)"
 
-OUT=$(step $PORT_lines line -F "$IMG" -F line=3 -F lines=7 -F key=2 -F time=4/4 -F first_bar=7)
+
+
+OUT=$(step $PORT_lines line -F "$IMG" -F "$IMG" -F "$IMG" -F line=1 -F lines=7 -F key=2 -F time=4/4 -F first_bar=1 -F pickup=yes -F 'hints=["F5 D5 A4 F5","",""]')
 R=$(last_line "$OUT")
-[ "$(echo "$R" | php -r '$j=json_decode(stream_get_contents(STDIN),true); echo count($j["line"]["measures"]);')" = "3" ] || fail "line: expected 3 bars: $R"
-echo "$OUT" | grep -q '"type":"progress","bars":3' || fail "line: no bar progress"
-php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["thinking"]===["thinkingLevel"=>"medium"] ? 0 : 1);' || fail "line should think 'medium'"
-echo "  ok   line: one line of music read on its own, with the carried key and time"
+[ "$(echo "$R" | php -r '$j=json_decode(stream_get_contents(STDIN),true); echo implode(",", array_map(fn($l) => $l["line"].":".count($l["measures"]), $j["line"]["lines"]));')" = "1:3,2:3,3:3" ] || fail "line: expected lines 1-3 with 3 bars each: $R"
+echo "$OUT" | grep -q '"type":"progress","bars":' || fail "line: no bar progress"
+php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["thinking"]===["thinkingLevel"=>"low"] && $l["images"]===3 ? 0 : 1);' || fail "line: three pictures, low thinking"
+echo "  ok   line: three lines in one request (each its own picture), with the carried key, time and measured note heads"
 
 ENGRAVING="$TMP/engraving.png"
 php -r 'echo base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");' > "$ENGRAVING"
-WRONG='{"measures":[{"n":1,"key":2,"time":"4/4","s1":"F#5s D5s A4s F#5s E5s C#5s A4s D5s B4s G4s D4s B4s A4s F#4s D4s F#4s"}]}'
-OUT=$(step $PORT_lines check -F "$IMG" -F "pages[]=@$ENGRAVING;type=image/png" -F line=1 -F lines=7 -F key=2 -F time=4/4 -F "transcription=$WRONG" -F 'problems=["Bar 1: example problem"]' -F round=1)
+L1='{"measures":[{"n":1,"key":2,"time":"4/4","s1":"F#5s D5s A4s F#5s E5s C#5s A4s D5s B4s G4s D4s B4s A4s F#4s D4s F#4s"}]}'
+L2=$(php -r '$r=json_decode(file_get_contents("tests/fixtures/sheets/hermans-hornpipe.reference.json"),true); echo json_encode(["measures"=>array_values(array_filter($r["measures"], fn($m)=>$m["n"]>=4&&$m["n"]<=6))]);')
+OUT=$(step $PORT_lines check -F "$IMG" -F "pages[]=@$ENGRAVING;type=image/png" -F "$IMG" -F "pages[]=@$ENGRAVING;type=image/png" -F line=1 -F lines=7 -F key=2 -F time=4/4 -F "transcriptions=[$L1,$L2]" -F 'line_numbers=[1,2]' -F 'problems=[["Bar 1: example problem"],[]]' -F round=1)
 R=$(last_line "$OUT")
-[ "$(echo "$R" | field check.mismatches.0.what)" = "pickup" ] || fail "check: expected a pickup mismatch: $R"
-[ "$(echo "$R" | field check.measures.0.pickup)" = "1" ] || fail "check: expected corrected bars: $R"
-php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["images"]===2 ? 0 : 1);' || fail "check: photo and engraving should both be sent"
-OUT=$(step $PORT_lines check -F "$IMG" -F line=1 -F "transcription=$WRONG")
+[ "$(echo "$R" | field check.lines.0.mismatches.0.what)" = "pickup" ] || fail "check: expected a pickup mismatch on line 1: $R"
+[ "$(echo "$R" | field check.lines.0.measures.0.pickup)" = "1" ] || fail "check: expected corrected bars: $R"
+[ "$(echo "$R" | field check.lines.1.mismatches)" = "[]" ] && [ "$(echo "$R" | field check.lines.1.measures)" = "null" ] || fail "check: line 2 was right: $R"
+php -r '$l=json_decode(file_get_contents(sys_get_temp_dir()."/riffi-gemini-last-lines.json"),true); exit($l["images"]===4 ? 0 : 1);' || fail "check: photo and engraving of both lines should be sent"
+OUT=$(step $PORT_lines check -F "$IMG" -F line=1 -F "transcriptions=[$L1]")
 [ "$(echo "$OUT" | tail -1)" = "400" ] || fail "check without the engraving should be refused"
-OUT=$(step $PORT_lines check -F "$IMG" -F "pages[]=@$ENGRAVING;type=image/png" -F 'transcription=nope')
+OUT=$(step $PORT_lines check -F "$IMG" -F "pages[]=@$ENGRAVING;type=image/png" -F 'transcriptions=["nope"]')
 [ "$(last_line "$OUT" | field code)" = "bad_transcription" ] || fail "check with a broken transcription: $OUT"
-echo "  ok   check: photo + engraving + transcription + code problems → mismatches and corrected bars"
+echo "  ok   check: photos + engravings + transcriptions + code problems, several lines at once → mismatches and corrected bars"
 
 # --- Pace and the provider's own limits ---
 for i in 1 2; do OUT=$(step $PORT_pace line -F "$IMG"); [ "$(echo "$OUT" | tail -1)" = "200" ] || fail "pace: request $i should go through"; done
@@ -154,7 +158,7 @@ echo "  ok   pace: GEMINI_RPM spaces requests (busy + retry_after); Gemini's ret
 OUT=$(curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F provider=claude -F "$IMG" "http://127.0.0.1:$PORT_fast/omr.php")
 [ "$(last_line "$OUT" | field score.title)" = "Tiny tune" ] || fail "provider=claude should use Claude when its key is set: $OUT"
 INFO=$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1")
-[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] || fail "info: $INFO"
+[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] && [ "$(echo "$INFO" | field lines_per_request)" = "8" ] || fail "info: $INFO"
 ! echo "$INFO" | grep -q 'AIza\|sk-ant' || fail "info leaked a key"
 echo "  ok   provider: a parent can pick Claude per scan when both keys are set; ?info lists providers (no keys)"
 

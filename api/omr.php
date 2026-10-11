@@ -67,16 +67,23 @@ function riffi_default_config(): array
         'GEMINI_API_KEY' => '',
         // Google's alias for the current Flash model. Pin an exact ID if you prefer.
         'GEMINI_MODEL' => 'gemini-flash-latest',
-        // How hard Gemini thinks before answering, for reading and double-checking a line
-        // ('low', 'medium', 'high'; '' = model default). Each line is a separate short
-        // request, so 'medium' stays well inside the time limit.
-        'GEMINI_THINKING' => 'medium',
+        // How hard Gemini thinks before answering, for reading and double-checking lines
+        // ('low', 'medium', 'high'; '' = model default). 'medium' can take a minute per
+        // request, too close to the deadline; the measured note heads do the hard part.
+        'GEMINI_THINKING' => 'low',
         // For the quick look at the whole page (title, key, time signature, pickup).
         'GEMINI_THINKING_OVERVIEW' => 'low',
         'GEMINI_MAX_TOKENS' => 16384,
         'ANTHROPIC_API_KEY' => '',
         'CLAUDE_MODEL' => 'claude-sonnet-5-5',
         'MAX_PAGES' => 8,
+        // Pictures in one line-by-line request (a page of up to 12 lines, photo + engraving each).
+        'MAX_IMAGES' => 24,
+        // Lines of music read (or double-checked) per request. Each line is still its own
+        // full-resolution picture. Gemini's free tier allows only ~20 requests a day per
+        // model, so the default reads a whole page in one go (about 3–4 requests per page).
+        // With a paid key, 1 reads strictly one line at a time.
+        'LINES_PER_REQUEST' => 8,
         'MAX_BYTES_PER_PAGE' => 3 * 1024 * 1024,
         'ALLOWED_ORIGIN' => '',
         // Requests per IP per hour. Reading a page line by line takes about 2–3 requests
@@ -326,7 +333,7 @@ function riffi_rate_limit(array $cfg): void
 }
 
 /** Validate uploads and return [ [mime, base64], ... ] in page order. */
-function riffi_read_pages(array $cfg): array
+function riffi_read_pages(array $cfg, int $max = 0): array
 {
     $files = $_FILES['pages'] ?? null;
     if (!$files || !isset($files['tmp_name'])) {
@@ -343,7 +350,7 @@ function riffi_read_pages(array $cfg): array
     if ($count < 1) {
         throw new RiffiHttpError(400, 'no_pages', 'No pages were sent.');
     }
-    if ($count > (int) $cfg['MAX_PAGES']) {
+    if ($count > ($max ?: (int) $cfg['MAX_PAGES'])) {
         throw new RiffiHttpError(413, 'too_many_pages', 'Too many pages.');
     }
     $finfo = new finfo(FILEINFO_MIME_TYPE);
@@ -496,36 +503,68 @@ function riffi_overview_parts(array $image, string $instrument, array $ctx): arr
     return [['image' => $image], ['text' => $text]];
 }
 
-/** Step 2: one line of music, with what we know so far. */
-function riffi_line_parts(array $image, string $instrument, array $ctx): array
+/** Hints: note heads the app measured on each line (natural names), if any. */
+function riffi_hint_text(array $hints, int $firstLine): string
+{
+    $rows = [];
+    foreach ($hints as $i => $h) {
+        if (is_string($h) && trim($h) !== '') {
+            $rows[] = 'Line ' . ($firstLine + $i) . ': ' . mb_substr(trim($h), 0, 1500);
+        }
+    }
+    if (!$rows) {
+        return '';
+    }
+    return "\nThe app measured the filled note heads on each line by computer, left to right, as natural note names (it can't see sharps, flats or naturals, so apply the key signature and accidentals yourself; heads at the same spot joined with + are a chord). "
+        . "These positions are usually right where your eyes might slip, so follow them for which line or space each note is on, but a few may be stray marks (fingering, pencil) and hollow half or whole notes are missing:\n"
+        . implode("\n", $rows) . "\n";
+}
+
+/** Step 2: one or more lines of music (each its own picture), with what we know so far. */
+function riffi_line_parts(array $images, string $instrument, array $ctx, array $hints = []): array
 {
     $c = $ctx;
-    $text = "This picture is ONE line (system) of music: line {$c['line']} of {$c['lines']}"
-        . ($c['pages'] > 1 ? " on page {$c['page']} of {$c['pages']}" : '') . '. ' . riffi_instrument_text($instrument) . "\n";
+    $n = count($images);
+    $first = $c['line'];
+    $last = $first + $n - 1;
+    $where = $c['pages'] > 1 ? " on page {$c['page']} of {$c['pages']}" : '';
+    $parts = [];
+    foreach ($images as $i => $img) {
+        if ($n > 1) {
+            $parts[] = ['text' => 'Line ' . ($first + $i) . ':'];
+        }
+        $parts[] = ['image' => $img];
+    }
+    $text = ($n === 1
+        ? "This picture is ONE line (system) of music: line $first of {$c['lines']}$where. "
+        : "These $n pictures are lines $first to $last (of {$c['lines']}$where), each ONE line (system) of music, in order. Read each picture on its own. ")
+        . riffi_instrument_text($instrument) . "\n";
     if ($c['key'] !== null) {
-        $text .= 'Key signature at the start of this line: ' . riffi_key_name($c['key']) . " (\"key\": {$c['key']}). ";
+        $text .= 'Key signature at the start' . ($n > 1 ? " of line $first" : ' of this line') . ': ' . riffi_key_name($c['key']) . " (\"key\": {$c['key']}). ";
     }
     if ($c['time'] !== null) {
         $text .= "Time signature: {$c['time']}, so each full bar adds up to " . riffi_bar_beats($c['time']) . '. ';
     }
-    $text .= 'If the line itself shows a different key or time signature, follow the line and give the new value on that bar. ';
+    $text .= 'If a line shows a different key or time signature, follow it and give the new value on that bar. ';
     if ($c['first_bar'] !== null) {
-        $text .= "The first full bar on this line should be bar {$c['first_bar']} (a printed bar number at the start of the line wins). ";
+        $text .= "The first full bar on line $first should be bar {$c['first_bar']} (a printed bar number at the start of a line wins); keep counting across lines. ";
     }
-    if ($c['line'] === 1 && $c['page'] === 1) {
+    if ($first === 1 && $c['page'] === 1) {
         if ($c['pickup'] === true) {
-            $text .= 'This line starts with a pickup (anacrusis) before the first full bar' . ($c['pickup_notes'] !== '' ? " (probably {$c['pickup_notes']})" : '') . ': give it as bar 0 with "pickup": true. ';
+            $text .= 'Line 1 starts with a pickup (anacrusis) before the first full bar' . ($c['pickup_notes'] !== '' ? " (probably {$c['pickup_notes']})" : '') . ': give it as bar 0 with "pickup": true. ';
         } elseif ($c['pickup'] === false) {
-            $text .= 'There is probably no pickup bar; if you do see an incomplete first bar, give it as bar 0 with "pickup": true. ';
+            $text .= 'There is probably no pickup bar; if you do see an incomplete first bar on line 1, give it as bar 0 with "pickup": true. ';
         } else {
-            $text .= 'If the line starts with an incomplete bar (a pickup), give it as bar 0 with "pickup": true. ';
+            $text .= 'If line 1 starts with an incomplete bar (a pickup), give it as bar 0 with "pickup": true. ';
         }
     }
-    $text .= "\nTranscribe every bar on this line, left to right. Reply with JSON:\n"
-        . '{"measures": [{"n": 1, "key": 2, "time": "4/4", "clef": "treble", "s1": "…"}, …], '
-        . '"unsure": [bar numbers you are not sure about], "warnings": [short friendly notes for a parent, at most three]}' . "\n"
-        . 'Give key, time and clef on the first measure of the line. Before replying, check that each bar adds up to the time signature, and that every F, C, G… has the sharps or flats of the key signature applied.';
-    return [['image' => $image], ['text' => $text]];
+    $text .= riffi_hint_text($hints, $first);
+    $text .= "\nTranscribe every bar of " . ($n === 1 ? 'the line' : 'each line') . ", left to right. Reply with JSON:\n"
+        . '{"lines": [{"line": ' . $first . ', "measures": [{"n": 1, "key": 2, "time": "4/4", "clef": "treble", "s1": "…"}, …], "unsure": [bar numbers you are not sure about]}' . ($n > 1 ? ', …' : '') . '], '
+        . '"warnings": [short friendly notes for a parent, at most three]}' . "\n"
+        . 'Give key, time and clef on the first measure of each line. Before replying, check that each bar adds up to the time signature, and that every F, C, G… has the sharps or flats of the key signature applied.';
+    $parts[] = ['text' => $text];
+    return $parts;
 }
 
 function riffi_bar_beats(string $time): string
@@ -536,23 +575,39 @@ function riffi_bar_beats(string $time): string
     return $q . ($q === '1' ? ' quarter note' : ' quarter notes');
 }
 
-/** Step 3: a fresh look comparing the photo with an engraving of our transcription. */
-function riffi_check_parts(array $photo, array $render, string $instrument, array $ctx, string $transcription, array $problems): array
+/** Step 3: a fresh look comparing each line's photo with an engraving of our transcription. */
+function riffi_check_parts(array $pairs, string $instrument, array $ctx, array $lineNumbers, array $transcriptions, array $problems, array $hints = []): array
 {
-    $text = "Picture 1 is a photo of ONE line of printed music. Picture 2 is a computer engraving of a transcription of that line. "
+    $parts = [];
+    foreach ($pairs as $i => [$photo, $render]) {
+        $no = $lineNumbers[$i] ?? ($ctx['line'] + $i);
+        $parts[] = ['text' => "Line $no — picture A (photo):"];
+        $parts[] = ['image' => $photo];
+        $parts[] = ['text' => "Line $no — picture B (computer engraving of our transcription, bars numbered):"];
+        $parts[] = ['image' => $render];
+    }
+    $text = 'For each line above, picture A is a photo of ONE line of printed music and picture B is a computer engraving of our transcription of it. '
         . riffi_instrument_text($instrument) . "\n"
         . ($ctx['key'] !== null ? 'Key signature: ' . riffi_key_name($ctx['key']) . '. ' : '')
-        . ($ctx['time'] !== null ? "Time signature: {$ctx['time']}. " : '') . "\n"
-        . "The transcription in Riffi Notation:\n" . $transcription . "\n"
-        . ($problems ? "Automatic checks found these problems:\n- " . implode("\n- ", $problems) . "\n" : "Automatic checks found no problems.\n")
-        . "Compare the photo with the engraving bar by bar and note by note. Look for differences in: pitch (which line or space, ledger lines), "
+        . ($ctx['time'] !== null ? "Time signature: {$ctx['time']}. " : '') . "\n";
+    foreach ($pairs as $i => $_) {
+        $no = $lineNumbers[$i] ?? ($ctx['line'] + $i);
+        $text .= "\nLine $no transcription (Riffi Notation):\n" . ($transcriptions[$i] ?? '{}') . "\n";
+        $p = $problems[$i] ?? [];
+        $text .= $p ? "Automatic checks found:\n- " . implode("\n- ", $p) . "\n" : "Automatic checks found no problems.\n";
+        if (!empty($hints[$i])) {
+            $text .= 'Note heads measured on the photo by computer (natural names, left to right; a few may be stray marks): ' . mb_substr((string) $hints[$i], 0, 1500) . "\n";
+        }
+    }
+    $text .= "\nCompare each photo with its engraving bar by bar and note by note. Look for differences in: pitch (which line or space, ledger lines), "
         . "the direction the melody moves, accidentals (and the key signature), rhythm (beams and flags), beaming groups, triplets, ties, rests and the pickup bar. "
         . "Ignore handwritten pencil marks and highlighter in the photo, and ignore fingering, bowing, slurs and dynamics.\n"
         . "Reply with JSON:\n"
-        . '{"mismatches": [{"bar": 3, "what": "pitch", "detail": "4th note is A4, not B4"}], '
-        . '"measures": [every bar of the line, corrected, same format as above], "unsure": [bar numbers still not certain]}' . "\n"
-        . 'If the transcription already matches the photo, reply with "mismatches": [] and the measures unchanged. Fix every problem the automatic checks found, unless the photo really shows it.';
-    return [['text' => 'Picture 1 (photo):'], ['image' => $photo], ['text' => 'Picture 2 (engraving of the transcription):'], ['image' => $render], ['text' => $text]];
+        . '{"lines": [{"line": 1, "mismatches": [{"bar": 3, "what": "pitch", "detail": "4th note is A4, not B4"}], '
+        . '"measures": [every bar of the line, corrected, same format as the transcription] or null if nothing is wrong, "unsure": [bar numbers still not certain]}, …]}' . "\n"
+        . 'Give one entry per line. If a transcription already matches its photo, give "mismatches": [] and "measures": null. Fix every problem the automatic checks found, unless the photo really shows it.';
+    $parts[] = ['text' => $text];
+    return $parts;
 }
 
 /**
@@ -1355,11 +1410,23 @@ function riffi_validate_line(string $text): array
     if ($d === null) {
         return [null, 'The reply was not a valid JSON object.'];
     }
-    $problem = riffi_check_measures($d['measures'] ?? null);
-    if ($problem !== null) {
-        return [null, $problem];
+    // One line may come back in the older single form.
+    $lines = is_array($d['lines'] ?? null) ? $d['lines'] : (isset($d['measures']) ? [['line' => null, 'measures' => $d['measures'], 'unsure' => $d['unsure'] ?? []]] : null);
+    if (!$lines) {
+        return [null, 'The JSON has no "lines".'];
     }
-    return [['measures' => array_values($d['measures']), 'unsure' => riffi_clean_bars($d['unsure'] ?? []), 'warnings' => riffi_clean_strings($d['warnings'] ?? [], 3)], null];
+    $out = [];
+    foreach ($lines as $i => $l) {
+        if (!is_array($l)) {
+            return [null, "Line entry $i is not an object."];
+        }
+        $problem = riffi_check_measures($l['measures'] ?? null);
+        if ($problem !== null) {
+            return [null, 'Line ' . ($l['line'] ?? $i + 1) . ': ' . $problem];
+        }
+        $out[] = ['line' => is_numeric($l['line'] ?? null) ? (int) $l['line'] : null, 'measures' => array_values($l['measures']), 'unsure' => riffi_clean_bars($l['unsure'] ?? [])];
+    }
+    return [['lines' => $out, 'warnings' => riffi_clean_strings($d['warnings'] ?? [], 3)], null];
 }
 
 function riffi_validate_check(string $text): array
@@ -1368,27 +1435,35 @@ function riffi_validate_check(string $text): array
     if ($d === null) {
         return [null, 'The reply was not a valid JSON object.'];
     }
-    $mismatches = [];
-    foreach (is_array($d['mismatches'] ?? null) ? $d['mismatches'] : [] as $m) {
-        if (is_array($m) && count($mismatches) < 40) {
-            $mismatches[] = [
-                'bar' => is_numeric($m['bar'] ?? null) ? (int) $m['bar'] : null,
-                'what' => mb_substr((string) ($m['what'] ?? ''), 0, 30),
-                'detail' => mb_substr(strip_tags((string) ($m['detail'] ?? '')), 0, 200),
-            ];
+    $lines = is_array($d['lines'] ?? null) ? $d['lines'] : [$d];
+    $out = [];
+    foreach ($lines as $i => $l) {
+        if (!is_array($l)) {
+            return [null, "Line entry $i is not an object."];
         }
-    }
-    $measures = null;
-    if (isset($d['measures']) && !(is_array($d['measures']) && count($d['measures']) === 0 && !$mismatches)) {
-        $problem = riffi_check_measures($d['measures']);
-        if ($problem !== null) {
-            return [null, $problem];
+        $mismatches = [];
+        foreach (is_array($l['mismatches'] ?? null) ? $l['mismatches'] : [] as $m) {
+            if (is_array($m) && count($mismatches) < 40) {
+                $mismatches[] = [
+                    'bar' => is_numeric($m['bar'] ?? null) ? (int) $m['bar'] : null,
+                    'what' => mb_substr((string) ($m['what'] ?? ''), 0, 30),
+                    'detail' => mb_substr(strip_tags((string) ($m['detail'] ?? '')), 0, 200),
+                ];
+            }
         }
-        $measures = array_values($d['measures']);
-    } elseif ($mismatches) {
-        return [null, 'Mismatches were listed but no corrected "measures" were given.'];
+        $measures = null;
+        if (is_array($l['measures'] ?? null) && count($l['measures']) > 0) {
+            $problem = riffi_check_measures($l['measures']);
+            if ($problem !== null) {
+                return [null, 'Line ' . ($l['line'] ?? $i + 1) . ': ' . $problem];
+            }
+            $measures = array_values($l['measures']);
+        } elseif ($mismatches) {
+            return [null, 'Line ' . ($l['line'] ?? $i + 1) . ': mismatches were listed but no corrected "measures" were given.'];
+        }
+        $out[] = ['line' => is_numeric($l['line'] ?? null) ? (int) $l['line'] : null, 'mismatches' => $mismatches, 'measures' => $measures, 'unsure' => riffi_clean_bars($l['unsure'] ?? [])];
     }
-    return [['mismatches' => $mismatches, 'measures' => $measures, 'unsure' => riffi_clean_bars($d['unsure'] ?? [])], null];
+    return [['lines' => $out], null];
 }
 
 /** Ask the provider and validate; retry once with the problem if there's time. */
@@ -1408,7 +1483,7 @@ function riffi_ask(RiffiProvider $provider, string $system, array $turns, RiffiC
         if ($problem === null) {
             return $result;
         }
-        RiffiLog::write('invalid_reply', ['attempt' => $attempt, 'problem' => $problem, 'start' => substr($text, 0, 200)]);
+        RiffiLog::write('invalid_reply', ['attempt' => $attempt, 'problem' => $problem, 'stop' => $stop, 'start' => substr($text, 0, 200), 'end' => substr($text, -200)]);
         if ($attempt >= 2 || $call->remaining() < 25) {
             throw new RiffiHttpError(422, 'unreadable', 'We could not read music from that photo.', $problem);
         }
@@ -1441,10 +1516,12 @@ function riffi_handle_scan(array $cfg): void
     if (!in_array($instrument, RIFFI_INSTRUMENTS, true)) {
         throw new RiffiHttpError(400, 'instrument', 'Unknown instrument.');
     }
-    $images = riffi_read_pages($cfg);
+    $images = riffi_read_pages($cfg, $mode === 'line' || $mode === 'check' ? (int) $cfg['MAX_IMAGES'] : 0);
     $ctx = riffi_line_context();
-    if ($mode === 'check' && count($images) !== 2) {
-        throw new RiffiHttpError(400, 'no_pages', 'Send the photo of the line and the engraving.');
+    $json = fn (string $k) => json_decode((string) ($_POST[$k] ?? '[]'), true);
+    $hints = riffi_clean_strings($json('hints'), 24, 2000);
+    if ($mode === 'check' && (count($images) < 2 || count($images) % 2 !== 0)) {
+        throw new RiffiHttpError(400, 'no_pages', 'Send the photo and the engraving of each line.');
     }
     riffi_rate_limit($cfg);
     riffi_provider_pace($cfg, $provider::NAME);
@@ -1470,18 +1547,26 @@ function riffi_handle_scan(array $cfg): void
                 $out->send(['type' => 'result', 'overview' => $info, 'provider' => $provider::NAME, 'ref' => RiffiLog::$ref]);
                 break;
             case 'line':
-                $line = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_line_parts($images[0], $instrument, $ctx)), $call, 'riffi_validate_line');
-                RiffiLog::write('line_ok', ['seconds' => round(microtime(true) - $started, 1), 'bars' => count($line['measures'])]);
+                $line = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_line_parts($images, $instrument, $ctx, $hints)), $call, 'riffi_validate_line');
+                RiffiLog::write('line_ok', ['seconds' => round(microtime(true) - $started, 1), 'lines' => count($line['lines']), 'bars' => array_sum(array_map(fn ($l) => count($l['measures']), $line['lines']))]);
                 $out->send(['type' => 'result', 'line' => $line, 'provider' => $provider::NAME, 'ref' => RiffiLog::$ref]);
                 break;
             case 'check':
-                $transcription = substr((string) ($_POST['transcription'] ?? ''), 0, 20000);
-                if (riffi_check_measures(json_decode($transcription, true)['measures'] ?? null) !== null) {
-                    throw new RiffiHttpError(400, 'bad_transcription', 'The transcription to check was not valid.');
+                $pairs = array_chunk($images, 2);
+                $transcriptions = [];
+                foreach (array_slice(is_array($json('transcriptions')) ? $json('transcriptions') : [], 0, count($pairs)) as $t) {
+                    if (!is_array($t) || riffi_check_measures($t['measures'] ?? null) !== null) {
+                        throw new RiffiHttpError(400, 'bad_transcription', 'A transcription to check was not valid.');
+                    }
+                    $transcriptions[] = json_encode(['measures' => $t['measures']], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 }
-                $problems = riffi_clean_strings(json_decode((string) ($_POST['problems'] ?? '[]'), true), 20, 300);
-                $check = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_check_parts($images[0], $images[1], $instrument, $ctx, $transcription, $problems)), $call, 'riffi_validate_check');
-                RiffiLog::write('check_ok', ['seconds' => round(microtime(true) - $started, 1), 'mismatches' => count($check['mismatches'])]);
+                if (count($transcriptions) !== count($pairs)) {
+                    throw new RiffiHttpError(400, 'bad_transcription', 'Send one transcription per line.');
+                }
+                $problems = array_map(fn ($p) => riffi_clean_strings($p, 20, 300), array_slice(is_array($json('problems')) ? $json('problems') : [], 0, count($pairs)));
+                $numbers = array_map('intval', array_filter(is_array($json('line_numbers')) ? $json('line_numbers') : [], 'is_numeric'));
+                $check = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_check_parts($pairs, $instrument, $ctx, $numbers, $transcriptions, $problems, $hints)), $call, 'riffi_validate_check');
+                RiffiLog::write('check_ok', ['seconds' => round(microtime(true) - $started, 1), 'lines' => count($check['lines']), 'mismatches' => array_sum(array_map(fn ($l) => count($l['mismatches']), $check['lines']))]);
                 $out->send(['type' => 'result', 'check' => $check, 'provider' => $provider::NAME, 'ref' => RiffiLog::$ref]);
                 break;
             default:
@@ -1508,6 +1593,7 @@ function riffi_handle_info(array $cfg): void
         'providers' => $providers,
         'default' => $providers[0] ?? null,
         'rpm' => ['gemini' => (int) $cfg['GEMINI_RPM'], 'claude' => (int) $cfg['CLAUDE_RPM']],
+        'lines_per_request' => max(1, (int) $cfg['LINES_PER_REQUEST']),
         'version' => 2,
     ]);
 }

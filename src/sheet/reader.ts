@@ -1,6 +1,7 @@
 import type { Instrument } from '../config';
 import { barLength, checkLine, type BarProblem } from './checks';
 import { callReader, OmrError, type ReaderRequest, type ReaderResult } from './omrClient';
+import { headNames, lineHint } from './noteHeads';
 import { NotationError, notationToMusicXml, parseStaff, type RnMeasure, type RnScore } from './notation';
 import { RequestPacer } from './pacer';
 import type { PreparedPage } from './pagePrep';
@@ -9,14 +10,18 @@ import type { PreparedPage } from './pagePrep';
  * Reading a page, line by line:
  *  1. a quick look at the whole page (small picture) for the title, key, time
  *     signature, tempo and pickup;
- *  2. each line of music read on its own from a full-resolution crop, carrying
- *     the key and time signature from line to line;
- *  3. free code checks on each line (bars add up, key applied, range, tuplets);
+ *  2. every line of music read from its own full-resolution crop, with the note
+ *     heads the app measured on it as hints, carrying the key, time signature
+ *     and bar numbers from line to line;
+ *  3. free code checks on each line (bars add up, key applied, range, tuplets,
+ *     pitches agree with the measured note heads);
  *  4. up to two double-check rounds per line: a fresh request with the photo,
  *     an engraving of our transcription and the problems found, which lists
  *     mismatches and returns a corrected line. Stops early when nothing is wrong.
- * Bars that still fail a check, or that the reader wasn't sure about, are
- * flagged for the review screen.
+ * Several lines can share one request (each still its own picture): Gemini's
+ * free tier allows only about 20 requests a day per model, so the server says
+ * how many lines go together (LINES_PER_REQUEST). Bars that still fail a check,
+ * or that the reader wasn't sure about, are flagged for the review screen.
  */
 
 export interface Overview {
@@ -35,15 +40,22 @@ export interface Overview {
 }
 
 interface LineReply {
-  measures: RnMeasure[];
+  lines?: { line: number; measures: RnMeasure[]; unsure?: number[] }[];
+  /** Older single-line form. */
+  measures?: RnMeasure[];
   unsure?: number[];
   warnings?: string[];
 }
 
-interface CheckReply {
+interface CheckLine {
+  line: number;
   mismatches: { bar: number | null; what: string; detail: string }[];
   measures: RnMeasure[] | null;
   unsure?: number[];
+}
+
+interface CheckReply {
+  lines?: CheckLine[];
 }
 
 export type ReadStage = 'overview' | 'reading' | 'checking';
@@ -52,8 +64,10 @@ export interface ReadProgress {
   stage: ReadStage;
   page: number;
   pages: number;
-  /** 1-based line on this page. */
+  /** 1-based line on this page (the first, if several are read together). */
   line?: number;
+  /** The last line in this request, if several are read together. */
+  lineTo?: number;
   lines?: number;
   /** Double-check round (1 or 2). */
   round?: number;
@@ -77,7 +91,7 @@ export interface LineTrace {
   line: number;
   firstRead: RnMeasure[];
   firstProblems: BarProblem[];
-  rounds: { mismatches: CheckReply['mismatches']; measures: RnMeasure[]; problems: BarProblem[]; accepted: boolean }[];
+  rounds: { mismatches: CheckLine['mismatches']; measures: RnMeasure[]; problems: BarProblem[]; accepted: boolean }[];
   final: RnMeasure[];
   checkSkipped?: string;
 }
@@ -102,6 +116,8 @@ export interface ReadOptions {
   /** Double-check rounds per line (0 = off). */
   checkRounds?: number;
   rpm?: number;
+  /** Lines per request (1 = one line at a time). */
+  linesPerRequest?: number;
   send?: Sender;
   render?: LineRenderer;
   pacer?: RequestPacer;
@@ -156,17 +172,42 @@ export function markPickup(measures: RnMeasure[], time: string | undefined): RnM
 
 const asArray = <T>(x: unknown): T[] => (Array.isArray(x) ? (x as T[]) : []);
 
+interface LineState {
+  page: number;
+  line: number;
+  crop: { blob: Blob; name: string };
+  firstBar: number;
+  firstOfPiece: boolean;
+  lastOfPiece: boolean;
+  /** Key/time/clef in force at the start of the line. */
+  ctx: { key?: number; time?: string; clef?: string };
+  hint: string;
+  heads: string[][];
+  measures: RnMeasure[];
+  unsure: Set<number>;
+  problems: BarProblem[];
+  trace: LineTrace;
+  /** Still worth another double-check. */
+  pending: boolean;
+}
+
+const chunks = <T>(xs: T[], n: number): T[][] => {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+};
+
 export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Promise<ReadResult> {
   const instrument = opts.instrument;
   const staves: 1 | 2 = instrument === 'piano' ? 2 : 1;
   const send: Sender = opts.send ?? ((req, onBars) => callReader(req, { instrument, provider: opts.provider, onBars }));
   const pacer = opts.pacer ?? new RequestPacer({ rpm: opts.rpm ?? 8, maxWaitMs: 20 * 60_000 });
   const rounds = Math.max(0, Math.min(2, opts.checkRounds ?? 2));
+  const per = Math.max(1, Math.min(12, opts.linesPerRequest ?? 8));
   const progress = opts.onProgress ?? (() => undefined);
 
   const overviews: Overview[] = [];
-  const traces: LineTrace[] = [];
-  const all: { m: RnMeasure; unsure: boolean; problems: BarProblem[] }[] = [];
+  const all: LineState[] = [];
   const warnings: string[] = [];
   let provider: string | undefined;
   let ctx: { key?: number; time?: string; clef?: string } = {};
@@ -181,6 +222,15 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     provider ??= res.provider;
     return res;
   };
+  const lineCtx = (st: LineState) => ({
+    key: st.ctx.key,
+    time: st.ctx.time,
+    instrument,
+    firstLine: st.firstOfPiece,
+    lastLine: st.lastOfPiece,
+    heads: st.heads,
+  });
+  const span = (group: LineState[]) => ({ line: group[0].line, lineTo: group.length > 1 ? group[group.length - 1].line : undefined });
 
   for (let p = 0; p < pages.length; p++) {
     const page = pages[p];
@@ -203,95 +253,154 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     if (ov.time && (p === 0 || !ctx.time)) ctx.time = ov.time;
     if (ov.clef && !ctx.clef) ctx.clef = ov.clef;
 
+    // 2–3. Read the lines (several per request), then check each in code.
     const lines = page.lines.length;
-    for (let l = 0; l < lines; l++) {
-      const lineNo = l + 1;
-      const firstOfPiece = p === 0 && l === 0;
-      const lastOfPiece = p === pages.length - 1 && l === lines - 1;
-      const printed = ov.first_bars?.[l];
+    const clef = ctx.clef ?? 'treble';
+    const pageLines: LineState[] = page.lines.map((blob, l) => ({
+      page: pageNo,
+      line: l + 1,
+      crop: { blob, name: `line-${pageNo}-${l + 1}.jpg` },
+      firstBar: 0,
+      firstOfPiece: p === 0 && l === 0,
+      lastOfPiece: p === pages.length - 1 && l === lines - 1,
+      ctx: {},
+      hint: lineHint(page.heads?.[l], clef),
+      heads: headNames(page.heads?.[l], clef),
+      measures: [],
+      unsure: new Set<number>(),
+      problems: [],
+      trace: { page: pageNo, line: l + 1, firstRead: [], firstProblems: [], rounds: [], final: [] },
+      pending: true,
+    }));
+    for (const group of chunks(pageLines, per)) {
+      const firstOfPiece = group[0].firstOfPiece;
+      const printed = ov.first_bars?.[group[0].line - 1];
       const firstBar = typeof printed === 'number' && printed >= nextBar - 1 && printed <= nextBar + 2 ? printed : nextBar;
-      const fields = {
-        page: pageNo,
-        pages: pages.length,
-        line: lineNo,
-        lines,
-        key: ctx.key,
-        time: ctx.time,
-        clef: ctx.clef,
-        first_bar: firstBar,
-        pickup: firstOfPiece ? (ov.pickup === true ? 'yes' : ov.pickup === false ? 'no' : undefined) : undefined,
-        pickup_notes: firstOfPiece ? ov.pickup_notes : undefined,
-      };
-      const crop = { blob: page.lines[l], name: `line-${pageNo}-${lineNo}.jpg` };
-
-      // 2. Read the line.
-      const res = await request({ stage: 'reading', page: pageNo, pages: pages.length, line: lineNo, lines }, { mode: 'line', images: [crop], fields });
-      const reply = (res.line ?? { measures: [] }) as LineReply;
-      let measures = normaliseLine(asArray<RnMeasure>(reply.measures), firstBar, firstOfPiece);
-      if (firstOfPiece) measures = markPickup(measures, ctx.time);
-      let unsure = new Set(asArray<number>(reply.unsure).map(Number));
+      const res = await request(
+        { stage: 'reading', page: pageNo, pages: pages.length, lines, ...span(group) },
+        {
+          mode: 'line',
+          images: group.map((g) => g.crop),
+          fields: {
+            page: pageNo,
+            pages: pages.length,
+            line: group[0].line,
+            lines,
+            key: ctx.key,
+            time: ctx.time,
+            clef: ctx.clef,
+            first_bar: firstBar,
+            pickup: firstOfPiece ? (ov.pickup === true ? 'yes' : ov.pickup === false ? 'no' : undefined) : undefined,
+            pickup_notes: firstOfPiece ? ov.pickup_notes : undefined,
+            hints: JSON.stringify(group.map((g) => g.hint)),
+          },
+        },
+      );
+      const reply = (res.line ?? {}) as LineReply;
       warnings.push(...asArray<string>(reply.warnings));
-      const lineCtx = { key: ctx.key, time: ctx.time, instrument, firstLine: firstOfPiece, lastLine: lastOfPiece };
+      const replies = asArray<NonNullable<LineReply['lines']>[number]>(reply.lines);
+      if (replies.length === 0 && reply.measures) replies.push({ line: group[0].line, measures: reply.measures, unsure: reply.unsure });
+      let bar = firstBar;
+      group.forEach((st, k) => {
+        const r = replies.find((x) => Number(x.line) === st.line) ?? replies[k];
+        st.firstBar = bar;
+        st.ctx = { ...ctx };
+        let measures = normaliseLine(asArray<RnMeasure>(r?.measures), bar, st.firstOfPiece);
+        if (st.firstOfPiece) measures = markPickup(measures, ctx.time);
+        st.measures = measures;
+        st.unsure = new Set(asArray<number>(r?.unsure).map(Number));
+        st.problems = checkLine(measures, lineCtx(st));
+        st.trace.firstRead = measures;
+        st.trace.firstProblems = st.problems;
+        ctx = carryForward(measures, ctx);
+        const last = measures.filter((m) => !m.pickup).pop();
+        bar = last ? Number(last.n) + 1 : bar;
+      });
+      nextBar = bar;
+    }
+    all.push(...pageLines);
+  }
 
-      // 3. Free checks.
-      let problems = checkLine(measures, lineCtx);
-      const trace: LineTrace = { page: pageNo, line: lineNo, firstRead: measures, firstProblems: problems, rounds: [], final: measures };
-
-      // 4. Double-check rounds.
-      for (let round = 1; round <= rounds; round++) {
-        let image: Blob;
+  // 4. Double-check rounds, for every line, several lines per request.
+  for (let round = 1; round <= rounds; round++) {
+    const pending = all.filter((st) => st.pending && st.measures.length > 0);
+    if (pending.length === 0) break;
+    for (const group of chunks(pending, per)) {
+      const ready: { st: LineState; image: Blob }[] = [];
+      for (const st of group) {
         try {
           if (!opts.render) throw new Error('no renderer');
-          image = await opts.render(measures, { key: ctx.key, time: ctx.time, clef: ctx.clef, staves });
+          ready.push({ st, image: await opts.render(st.measures, { key: st.ctx.key, time: st.ctx.time, clef: st.ctx.clef, staves }) });
         } catch (e) {
-          trace.checkSkipped = `couldn't engrave the line (${(e as Error).message})`;
-          break;
+          st.trace.checkSkipped = `couldn't engrave the line (${(e as Error).message})`;
+          st.pending = false;
         }
-        const check = await request(
-          { stage: 'checking', page: pageNo, pages: pages.length, line: lineNo, lines, round },
-          {
-            mode: 'check',
-            images: [crop, { blob: image, name: `engraving-${pageNo}-${lineNo}.png` }],
-            fields: {
-              ...fields,
-              round,
-              transcription: JSON.stringify({ measures }),
-              problems: JSON.stringify(problems.map((x) => x.message)),
-            },
+      }
+      if (ready.length === 0) continue;
+      const first = ready[0].st;
+      const check = await request(
+        { stage: 'checking', page: first.page, pages: pages.length, lines: pages[first.page - 1].lines.length, round, ...span(ready.map((r) => r.st)) },
+        {
+          mode: 'check',
+          images: ready.flatMap(({ st, image }) => [st.crop, { blob: image, name: `engraving-${st.page}-${st.line}.png` }]),
+          fields: {
+            page: first.page,
+            pages: pages.length,
+            line: first.line,
+            lines: pages[first.page - 1].lines.length,
+            line_numbers: JSON.stringify(ready.map((r) => r.st.line)),
+            key: first.ctx.key,
+            time: first.ctx.time,
+            round,
+            transcriptions: JSON.stringify(ready.map((r) => ({ measures: r.st.measures }))),
+            problems: JSON.stringify(ready.map((r) => r.st.problems.map((x) => x.message))),
+            hints: JSON.stringify(ready.map((r) => r.st.hint)),
           },
-        );
-        const c = (check.check ?? { mismatches: [], measures: null }) as CheckReply;
-        const mismatches = asArray<CheckReply['mismatches'][number]>(c.mismatches);
-        unsure = new Set(asArray<number>(c.unsure).map(Number));
-        if (mismatches.length === 0 || !c.measures) {
-          trace.rounds.push({ mismatches, measures, problems, accepted: false });
-          break;
+        },
+      );
+      const replies = asArray<CheckLine>(((check.check ?? {}) as CheckReply).lines);
+      ready.forEach(({ st }, k) => {
+        const c = replies.find((x) => Number(x.line) === st.line) ?? replies[k];
+        const mismatches = asArray<CheckLine['mismatches'][number]>(c?.mismatches);
+        if (c?.unsure) st.unsure = new Set(asArray<number>(c.unsure).map(Number));
+        if (!c || mismatches.length === 0 || !c.measures) {
+          st.trace.rounds.push({ mismatches, measures: st.measures, problems: st.problems, accepted: false });
+          st.pending = false;
+          return;
         }
-        let corrected = normaliseLine(asArray<RnMeasure>(c.measures), firstBar, firstOfPiece);
-        if (firstOfPiece) corrected = markPickup(corrected, ctx.time);
-        const newProblems = checkLine(corrected, lineCtx);
+        let corrected = normaliseLine(asArray<RnMeasure>(c.measures), st.firstBar, st.firstOfPiece);
+        if (st.firstOfPiece) corrected = markPickup(corrected, st.ctx.time);
+        const newProblems = checkLine(corrected, lineCtx(st));
         // Take the correction unless it breaks more bars than it fixes.
-        const accepted = newProblems.length <= problems.length || corrected.length === measures.length;
-        trace.rounds.push({ mismatches, measures: corrected, problems: newProblems, accepted });
-        if (!accepted) break;
-        measures = corrected;
-        problems = newProblems;
-      }
-      trace.final = measures;
-      traces.push(trace);
-
-      for (const m of measures) {
-        all.push({ m, unsure: unsure.has(Number(m.n)), problems: problems.filter((x) => x.n === Number(m.n)) });
-      }
-      ctx = carryForward(measures, ctx);
-      const last = measures.filter((m) => !m.pickup).pop();
-      nextBar = last ? Number(last.n) + 1 : nextBar;
+        const accepted = newProblems.length <= st.problems.length || corrected.length === st.measures.length;
+        st.trace.rounds.push({ mismatches, measures: corrected, problems: newProblems, accepted });
+        if (!accepted) {
+          st.pending = false;
+          return;
+        }
+        st.measures = corrected;
+        st.problems = newProblems;
+      });
     }
   }
 
-  // Put the piece together.
+  // Put the piece together, numbering bars in order (a correction may have changed a line's bar count).
   const ov0 = overviews.find((o) => o.title || o.composer || o.tempo) ?? overviews[0] ?? {};
-  const measures = all.map((x) => x.m);
+  const entries: { m: RnMeasure; unsure: boolean; problems: BarProblem[] }[] = [];
+  let n = 1;
+  for (const st of all) {
+    st.trace.final = st.measures;
+    for (const m of st.measures) {
+      const local = Number(m.n);
+      const renumbered = m.pickup ? { ...m, n: 0 } : { ...m, n: n++ };
+      entries.push({
+        m: renumbered,
+        unsure: st.unsure.has(local),
+        problems: st.problems.filter((x) => x.n === local).map((x) => ({ ...x, message: x.message.replace(`Bar ${local}`, `Bar ${renumbered.n}`) })),
+      });
+    }
+  }
+  const measures = entries.map((x) => x.m);
   if (measures.length === 0) throw new OmrError('unreadable', undefined, 'no_measures');
   const firstKey = measures.find((m) => m.key !== undefined)?.key ?? overviews[0]?.key ?? 0;
   const firstTime = measures.find((m) => m.time)?.time ?? overviews[0]?.time ?? '4/4';
@@ -305,7 +414,7 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     warnings: [...new Set(warnings)].slice(0, 6),
   };
   const flags: BarFlag[] = [];
-  all.forEach((x, index) => {
+  entries.forEach((x, index) => {
     const reasons = x.problems.map((p) => p.message);
     if (x.unsure) reasons.push(`The music reader wasn't sure about bar ${x.m.n}.`);
     if (reasons.length) flags.push({ index, n: Number(x.m.n), reasons });
@@ -318,5 +427,5 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     if (e instanceof NotationError) throw new OmrError('unreadable', undefined, 'bad_notation');
     throw e;
   }
-  return { score, musicxml: converted.musicxml, warnings: score.warnings ?? [], flags, trace: { overview: overviews, lines: traces, provider } };
+  return { score, musicxml: converted.musicxml, warnings: score.warnings ?? [], flags, trace: { overview: overviews, lines: all.map((st) => st.trace), provider } };
 }

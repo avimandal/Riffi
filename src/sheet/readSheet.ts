@@ -26,6 +26,7 @@ export async function readSheetMusic(
     instrument,
     provider,
     rpm,
+    linesPerRequest: info?.linesPerRequest ?? 8,
     onProgress,
     render: (measures, ctx) => renderLinePng(measures, ctx, instrument),
   });

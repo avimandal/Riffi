@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { detectStaves, systemBands, topAt } from '../../src/sheet/staffDetect';
+import { findHeads, headHint, lineHint, stepName } from '../../src/sheet/noteHeads';
 
 /** A synthetic page: tilted staves, note heads, stems, beams and a block of "text". */
-function page(w: number, h: number, tops: number[], sp: number, slope = 0.015, seed = 1) {
+function page(w: number, h: number, tops: number[], sp: number, slope = 0.015, seed = 1, placed?: number[][]) {
   const g = new Uint8Array(w * h).fill(235);
   let r = seed;
   const rand = () => ((r = (r * 16807) % 2147483647) / 2147483647);
@@ -15,8 +16,12 @@ function page(w: number, h: number, tops: number[], sp: number, slope = 0.015, s
       for (let l = 0; l < 5; l++) dot(x, top + slope * x + l * sp, 60 + Math.floor(rand() * 40));
     }
     // Notes: filled heads on lines/spaces with stems, every 25 px.
+    const steps: number[] = [];
+    placed?.push(steps);
     for (let x = Math.round(w * 0.1); x < w * 0.9; x += 25) {
-      const y = top + slope * x + Math.floor(rand() * 10) * (sp / 2) - sp;
+      const k = Math.floor(rand() * 10);
+      steps.push(10 - k);
+      const y = top + slope * x + k * (sp / 2) - sp;
       for (let dy = -sp / 2; dy <= sp / 2; dy++) for (let dx = -sp * 0.7; dx <= sp * 0.7; dx++) dot(x + dx, y + dy);
       for (let dy = 0; dy < 3.5 * sp; dy++) dot(x + sp * 0.7, y - dy);
     }
@@ -61,5 +66,39 @@ describe('staff detection', () => {
     const w = 600;
     const h = 400;
     expect(detectStaves(page(w, h, [], 9), w, h)).toEqual([]);
+  });
+});
+
+describe('note heads', () => {
+  it('names staff positions', () => {
+    expect([0, 8, 10, -2].map((s) => stepName(s))).toEqual(['E4', 'F5', 'A5', 'C4']);
+    expect(stepName(0, 'bass')).toBe('G2');
+    expect(stepName(4, 'alto')).toBe('C4');
+  });
+
+  it('finds every head on a tilted synthetic page, on the right line or space', () => {
+    const w = 900;
+    const h = 700;
+    const tops = [80, 230, 380, 530];
+    const placed: number[][] = [];
+    const g = page(w, h, tops, 9, 0.015, 1, placed);
+    const staves = detectStaves(g, w, h);
+    const heads = findHeads(g, w, h, staves);
+    heads.forEach((list, i) => {
+      // Heads were drawn at steps 10 (A5) down to 1 (F4); the first few may sit in the clef zone.
+      const got = list.map((x) => x.step);
+      const want = placed[i];
+      const tail = want.slice(-got.length);
+      expect(got.length).toBeGreaterThanOrEqual(want.length - 3);
+      expect(got).toEqual(tail);
+    });
+  });
+
+  it('makes hints with chords, and leaves out lines with too few heads', () => {
+    expect(headHint([{ x: 10, step: 0 }, { x: 20, step: 2 }, { x: 30, step: 4 }, { x: 31, step: 7 }])).toBe('E4 G4 B4+E5');
+    expect(headHint([{ x: 10, step: 0 }])).toBe('');
+    const four = [0, 1, 2, 3].map((step) => ({ x: step * 20, step }));
+    const piano = lineHint([four, four]);
+    expect(piano).toBe('upper staff: E4 F4 G4 A4 / lower staff: G2 A2 B2 C3');
   });
 });

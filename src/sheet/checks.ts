@@ -8,7 +8,7 @@ import { parseStaff, type RnEvent, type RnMeasure } from './notation';
  * double-check pass and, if they survive it, are highlighted on the review screen.
  */
 
-export type ProblemKind = 'syntax' | 'duration' | 'key' | 'time' | 'range' | 'tuplet';
+export type ProblemKind = 'syntax' | 'duration' | 'key' | 'time' | 'range' | 'tuplet' | 'heads';
 
 export interface BarProblem {
   /** Printed bar number. */
@@ -26,6 +26,8 @@ export interface LineContext {
   firstLine?: boolean;
   /** The last line of the piece may end with a short bar (completing a pickup). */
   lastLine?: boolean;
+  /** Note heads measured on the photo: natural names per staff, left to right. */
+  heads?: string[][];
 }
 
 /** Lowest and highest MIDI notes we expect for each instrument. */
@@ -155,6 +157,56 @@ export function checkLine(measures: RnMeasure[], ctx: LineContext): BarProblem[]
       if (unclosed) problems.push({ n, kind: 'tuplet', message: `Bar ${n}${where}: a tuplet bracket "(" isn't closed with ")".` });
       for (const g of groups) {
         if (g.count !== g.actual) problems.push({ n, kind: 'tuplet', message: `Bar ${n}${where}: a ${g.actual}-tuplet has ${g.count} ${g.count === 1 ? 'note' : 'notes'} in it.` });
+      }
+    }
+  });
+  if (ctx.heads) problems.push(...checkAgainstHeads(measures, ctx.heads));
+  problems.sort((a, b) => a.n - b.n);
+  return problems;
+}
+
+/**
+ * Compare the transcription's notes (letter + octave, ignoring accidentals)
+ * with the note heads measured on the photo, in order. Bars where several
+ * notes have no matching head probably have wrong pitches. Extra measured
+ * heads don't count (stray marks), and if few heads were found the check is
+ * skipped. Pure.
+ */
+export function checkAgainstHeads(measures: RnMeasure[], heads: string[][]): BarProblem[] {
+  const problems: BarProblem[] = [];
+  (['s1', 's2'] as const).forEach((staff, si) => {
+    const found = heads[si];
+    if (!found) return;
+    const notes: { name: string; bar: number }[] = [];
+    measures.forEach((m, i) => {
+      const n = Number.isFinite(Number(m.n)) ? Number(m.n) : i + 1;
+      for (const mm of (m[staff] ?? '').matchAll(/([A-G])(?:##|#|bb|b|n)?(\d)/g)) notes.push({ name: `${mm[1]}${mm[2]}`, bar: n });
+    });
+    if (notes.length < 4 || found.length < notes.length * 0.6) return;
+    // Longest common subsequence.
+    const A = notes.length;
+    const B = found.length;
+    const dp = Array.from({ length: A + 1 }, () => new Uint16Array(B + 1));
+    for (let i = A - 1; i >= 0; i--) for (let j = B - 1; j >= 0; j--) dp[i][j] = notes[i].name === found[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const matched = new Set<number>();
+    for (let i = 0, j = 0; i < A && j < B; ) {
+      if (notes[i].name === found[j]) {
+        matched.add(i);
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    const perBar = new Map<number, { total: number; off: number }>();
+    notes.forEach((x, i) => {
+      const e = perBar.get(x.bar) ?? { total: 0, off: 0 };
+      e.total++;
+      if (!matched.has(i)) e.off++;
+      perBar.set(x.bar, e);
+    });
+    for (const [n, e] of perBar) {
+      if (e.off >= 2 && e.off >= e.total * 0.25) {
+        problems.push({ n, kind: 'heads', message: `Bar ${n}${si === 1 ? ' (lower staff)' : ''}: ${e.off} of ${e.total} notes don't match the note heads measured on the photo (check which line or space each one is on).` });
       }
     }
   });

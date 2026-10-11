@@ -214,6 +214,8 @@ export interface ReaderInfo {
   providers: string[];
   default: string | null;
   rpm: Record<string, number>;
+  /** Lines of music per request (the server's LINES_PER_REQUEST). */
+  linesPerRequest: number;
 }
 
 export async function readerInfo(fetchImpl: typeof fetch = fetch): Promise<ReaderInfo | null> {
@@ -221,7 +223,8 @@ export async function readerInfo(fetchImpl: typeof fetch = fetch): Promise<Reade
     const res = await fetchImpl(`${OMR_ENDPOINT}?info=1`, { cache: 'no-store' });
     if (!res.ok) return null;
     const j = (await res.json()) as Partial<ReaderInfo>;
-    return { providers: Array.isArray(j.providers) ? j.providers : [], default: j.default ?? null, rpm: j.rpm ?? {} };
+    const per = Number((j as { lines_per_request?: number }).lines_per_request);
+    return { providers: Array.isArray(j.providers) ? j.providers : [], default: j.default ?? null, rpm: j.rpm ?? {}, linesPerRequest: per > 0 ? per : 8 };
   } catch {
     return null;
   }

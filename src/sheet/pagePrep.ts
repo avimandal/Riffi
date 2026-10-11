@@ -1,5 +1,6 @@
 import type { Instrument } from '../config';
 import { canvasToJpeg, renderPageCanvas, type PageDraft } from '../screens/add/imagePrep';
+import { findHeads, type Head } from './noteHeads';
 import { detectStaves, systemBands } from './staffDetect';
 
 /**
@@ -20,6 +21,8 @@ const ANALYSIS_WIDTH = 1400;
 export interface PreparedPage {
   context: Blob;
   lines: Blob[];
+  /** Note heads measured on each line: [line][staff] → heads left to right. Named once the clef is known. */
+  heads?: Head[][][];
   /** False if no staves were found, and the whole page is sent as one "line". */
   detected: boolean;
 }
@@ -67,5 +70,7 @@ export async function preparePage(page: PageDraft, instrument: Instrument): Prom
   }
   const lines: Blob[] = [];
   for (const b of bands) lines.push(await canvasToJpeg(crop(full, Math.floor(b.y0 * k), Math.ceil(b.y1 * k), LINE_MAX_WIDTH), 0.9));
-  return { context, lines, detected: true };
+  const found = findHeads(gray, w, h, staves);
+  const heads = bands.map((b) => b.staves.map((st) => found[staves.indexOf(st)] ?? []));
+  return { context, lines, heads, detected: true };
 }

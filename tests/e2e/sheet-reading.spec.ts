@@ -57,52 +57,68 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   const requests: ReturnType<typeof parseForm>[] = [];
   await page.route('**/api/omr.php**', async (route) => {
     const req = route.request();
-    if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], default: 'gemini', rpm: { gemini: 100 } }) });
+    if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], default: 'gemini', rpm: { gemini: 100 }, lines_per_request: 3 }) });
     const form = parseForm(req);
     requests.push(form);
     saveParts(req, `${requests.length}`);
     await new Promise((r) => setTimeout(r, 250));
-    const line = Number(form.fields.line);
     if (form.fields.mode === 'overview') {
       return route.fulfill(ndjson({ type: 'start', ref: 'ov0001' }, { type: 'result', overview: { title: "Herman's hornpipe", composer: "Mark O'Connor", key: 2, time: '4/4', pickup: true, pickup_notes: 'A5e', lines: 7 }, provider: 'gemini', ref: 'ov0001' }));
     }
-    const bars = lineBars(line);
     if (form.fields.mode === 'line') {
+      const first = Number(form.fields.line);
       // Line 3 comes back with bar 8's ending as plain 16ths (one beat too long); the double-check fixes it.
-      const measures = line === 3 ? bars.map((m) => (m.n === 8 ? { ...m, s1: m.s1.replace('3( C#5s D5s D#5s )', 'C#5s D5s D#5s') } : m)) : bars;
-      return route.fulfill(ndjson({ type: 'start', ref: 'ln0001' }, { type: 'progress', bars: 2 }, { type: 'result', line: { measures, unsure: line === 7 ? [21] : [] }, ref: 'ln0001' }));
+      const lines = form.files.map((_, k) => {
+        const line = first + k;
+        const bars = lineBars(line);
+        const measures = line === 3 ? bars.map((m) => (m.n === 8 ? { ...m, s1: m.s1.replace('3( C#5s D5s D#5s )', 'C#5s D5s D#5s') } : m)) : bars;
+        return { line, measures, unsure: line === 7 ? [21] : [] };
+      });
+      return route.fulfill(ndjson({ type: 'start', ref: 'ln0001' }, { type: 'progress', bars: 2 }, { type: 'result', line: { lines }, ref: 'ln0001' }));
     }
-    const sent = JSON.parse(form.fields.transcription) as { measures: Measure[] };
-    const fixed = sent.measures.every((m, i) => m.s1 === bars[i].s1);
-    return route.fulfill(
-      ndjson({ type: 'start', ref: 'ck0001' }, { type: 'result', check: fixed ? { mismatches: [], measures: null, unsure: line === 7 ? [21] : [] } : { mismatches: [{ bar: 8, what: 'triplet', detail: 'the last three notes are a triplet' }], measures: bars }, ref: 'ck0001' }),
-    );
+    const sent = JSON.parse(form.fields.transcriptions) as { measures: Measure[] }[];
+    const numbers = JSON.parse(form.fields.line_numbers) as number[];
+    const lines = sent.map((t, k) => {
+      const line = numbers[k];
+      const bars = lineBars(line);
+      const fixed = t.measures.every((m, i) => m.s1 === bars[i].s1);
+      return fixed ? { line, mismatches: [], measures: null, unsure: line === 7 ? [21] : [] } : { line, mismatches: [{ bar: 8, what: 'triplet', detail: 'the last three notes are a triplet' }], measures: bars };
+    });
+    return route.fulfill(ndjson({ type: 'start', ref: 'ck0001' }, { type: 'result', check: { lines }, ref: 'ck0001' }));
   });
 
   await newKid(page, 'Ivy');
   await page.getByTestId('add-music').click();
   await page.getByTestId('photo-input').setInputFiles(photo);
   await page.getByRole('button', { name: 'Read my music' }).click();
-  await expect(page.getByRole('heading', { name: /Reading line \d of 7/ })).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByRole('heading', { name: /Double-checking line \d/ })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('heading', { name: /Reading lines \d–\d of 7/ })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('heading', { name: /Double-checking line/ })).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible({ timeout: 90_000 });
 
-  // The browser found all seven lines on the real photo and sent each one as its own crop.
-  const modes = requests.map((r) => `${r.fields.mode}${r.fields.line ?? ''}${r.fields.round ? `.${r.fields.round}` : ''}`);
-  expect(modes).toEqual(['overview', 'line1', 'check1.1', 'line2', 'check2.1', 'line3', 'check3.1', 'check3.2', 'line4', 'check4.1', 'line5', 'check5.1', 'line6', 'check6.1', 'line7', 'check7.1']);
-  const line3 = requests.find((r) => r.fields.mode === 'line' && r.fields.line === '3')!;
-  expect(line3.fields).toMatchObject({ key: '2', time: '4/4', first_bar: '7', lines: '7' });
-  expect(line3.files).toEqual([{ name: 'line-1-3.jpg', type: 'image/jpeg' }]);
-  // The double-check gets the line photo and an engraving of our transcription.
-  const check = requests.find((r) => r.fields.mode === 'check')!;
-  expect(check.files).toEqual([
+  // The browser found all seven lines on the real photo and sent each one as its own crop, three lines per request.
+  const modes = requests.map((r) => `${r.fields.mode}${r.fields.line ?? ''}:${r.files.length}${r.fields.round ? `.r${r.fields.round}` : ''}`);
+  expect(modes).toEqual(['overview:1', 'line1:3', 'line4:3', 'line7:1', 'check1:6.r1', 'check4:6.r1', 'check7:2.r1', 'check3:2.r2']);
+  const second = requests[2];
+  expect(second.fields).toMatchObject({ key: '2', time: '4/4', first_bar: '10', lines: '7' });
+  expect(second.files).toEqual([
+    { name: 'line-1-4.jpg', type: 'image/jpeg' },
+    { name: 'line-1-5.jpg', type: 'image/jpeg' },
+    { name: 'line-1-6.jpg', type: 'image/jpeg' },
+  ]);
+  // Note heads measured on the photo go along as hints (line 4 starts F#5 D5 A4 F#5 …).
+  const hints = JSON.parse(second.fields.hints) as string[];
+  expect(hints).toHaveLength(3);
+  expect(hints[0]).toContain('F5 D5 A4 F5 E5 C5');
+  // The double-check gets each line's photo then an engraving of our transcription.
+  const check = requests[4];
+  expect(check.files.slice(0, 2)).toEqual([
     { name: 'line-1-1.jpg', type: 'image/jpeg' },
     { name: 'engraving-1-1.png', type: 'image/png' },
   ]);
   expect(check.sizes[1]).toBeGreaterThan(4000);
-  // Bar 8's beat problem went to the double-check.
-  const c3 = requests.find((r) => r.fields.mode === 'check' && r.fields.line === '3')!;
-  expect(c3.fields.problems).toContain('Bar 8 adds up to 4.25 beats');
+  // Bar 8's beat problem went to the double-check, and only line 3 got a second look.
+  expect(check.fields.problems).toContain('Bar 8 adds up to 4.25 beats');
+  expect(JSON.parse(requests[7].fields.line_numbers)).toEqual([3]);
 
   // Review: bar 21 (the reader wasn't sure) is listed and outlined on the music.
   await expect(page.getByTestId('flag-list')).toContainText('Bar 21');

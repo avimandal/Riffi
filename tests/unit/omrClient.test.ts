@@ -76,7 +76,7 @@ describe('one reader request over the stream', () => {
 
   it('asks the server which providers are set up', async () => {
     const info = await readerInfo(fakeFetch([() => new Response(JSON.stringify({ providers: ['gemini', 'claude'], default: 'gemini', rpm: { gemini: 8, claude: 40 } }), { headers: { 'content-type': 'application/json' } })]));
-    expect(info).toEqual({ providers: ['gemini', 'claude'], default: 'gemini', rpm: { gemini: 8, claude: 40 } });
+    expect(info).toEqual({ providers: ['gemini', 'claude'], default: 'gemini', rpm: { gemini: 8, claude: 40 }, linesPerRequest: 8 });
     expect(await readerInfo(fakeFetch([() => new Response('nope', { status: 404 })]))).toBeNull();
   });
 
