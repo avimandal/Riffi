@@ -67,7 +67,7 @@ return [
     // a minute per request, too close to the time limit.
     'GEMINI_THINKING' => 'low',
     'GEMINI_THINKING_OVERVIEW' => 'low',
-    'GEMINI_MAX_TOKENS' => 16384,
+    'GEMINI_MAX_TOKENS' => 65536,
     // Claude only:
     'MAX_TOKENS' => 16384,
     'EFFORT' => 'medium',

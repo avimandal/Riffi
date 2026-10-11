@@ -322,10 +322,12 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
   }
 
   // 4. Double-check rounds, for every line, several lines per request.
+  // A check sends two pictures per line and makes the model think harder, so it takes half as many lines.
+  const perCheck = Math.max(1, Math.ceil(per / 2));
   for (let round = 1; round <= rounds; round++) {
     const pending = all.filter((st) => st.pending && st.measures.length > 0);
     if (pending.length === 0) break;
-    for (const group of chunks(pending, per)) {
+    for (const group of chunks(pending, perCheck)) {
       const ready: { st: LineState; image: Blob }[] = [];
       for (const st of group) {
         try {
@@ -338,26 +340,37 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
       }
       if (ready.length === 0) continue;
       const first = ready[0].st;
-      const check = await request(
-        { stage: 'checking', page: first.page, pages: pages.length, lines: pages[first.page - 1].lines.length, round, ...span(ready.map((r) => r.st)) },
-        {
-          mode: 'check',
-          images: ready.flatMap(({ st, image }) => [st.crop, { blob: image, name: `engraving-${st.page}-${st.line}.png` }]),
-          fields: {
-            page: first.page,
-            pages: pages.length,
-            line: first.line,
-            lines: pages[first.page - 1].lines.length,
-            line_numbers: JSON.stringify(ready.map((r) => r.st.line)),
-            key: first.ctx.key,
-            time: first.ctx.time,
-            round,
-            transcriptions: JSON.stringify(ready.map((r) => ({ measures: r.st.measures }))),
-            problems: JSON.stringify(ready.map((r) => r.st.problems.map((x) => x.message))),
-            hints: JSON.stringify(ready.map((r) => r.st.hint)),
+      let check: ReaderResult;
+      try {
+        check = await request(
+          { stage: 'checking', page: first.page, pages: pages.length, lines: pages[first.page - 1].lines.length, round, ...span(ready.map((r) => r.st)) },
+          {
+            mode: 'check',
+            images: ready.flatMap(({ st, image }) => [st.crop, { blob: image, name: `engraving-${st.page}-${st.line}.png` }]),
+            fields: {
+              page: first.page,
+              pages: pages.length,
+              line: first.line,
+              lines: pages[first.page - 1].lines.length,
+              line_numbers: JSON.stringify(ready.map((r) => r.st.line)),
+              key: first.ctx.key,
+              time: first.ctx.time,
+              round,
+              transcriptions: JSON.stringify(ready.map((r) => ({ measures: r.st.measures }))),
+              problems: JSON.stringify(ready.map((r) => r.st.problems.map((x) => x.message))),
+              hints: JSON.stringify(ready.map((r) => r.st.hint)),
+            },
           },
-        },
-      );
+        );
+      } catch (e) {
+        // A double-check that fails keeps the first read (its bars still get the code checks' flags).
+        if (!(e instanceof OmrError) || !['unreadable', 'timeout', 'server'].includes(e.kind)) throw e;
+        for (const { st } of ready) {
+          st.trace.checkSkipped = `double-check failed (${e.code ?? e.kind})`;
+          st.pending = false;
+        }
+        continue;
+      }
       const replies = asArray<CheckLine>(((check.check ?? {}) as CheckReply).lines);
       ready.forEach(({ st }, k) => {
         const c = replies.find((x) => Number(x.line) === st.line) ?? replies[k];

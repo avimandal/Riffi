@@ -73,7 +73,8 @@ function riffi_default_config(): array
         'GEMINI_THINKING' => 'low',
         // For the quick look at the whole page (title, key, time signature, pickup).
         'GEMINI_THINKING_OVERVIEW' => 'low',
-        'GEMINI_MAX_TOKENS' => 16384,
+        // Thinking counts towards this on Gemini 3, so leave plenty of room.
+        'GEMINI_MAX_TOKENS' => 65536,
         'ANTHROPIC_API_KEY' => '',
         'CLAUDE_MODEL' => 'claude-sonnet-5-5',
         'MAX_PAGES' => 8,

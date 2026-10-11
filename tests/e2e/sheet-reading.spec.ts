@@ -97,7 +97,7 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
 
   // The browser found all seven lines on the real photo and sent each one as its own crop, three lines per request.
   const modes = requests.map((r) => `${r.fields.mode}${r.fields.line ?? ''}:${r.files.length}${r.fields.round ? `.r${r.fields.round}` : ''}`);
-  expect(modes).toEqual(['overview:1', 'line1:3', 'line4:3', 'line7:1', 'check1:6.r1', 'check4:6.r1', 'check7:2.r1', 'check3:2.r2']);
+  expect(modes).toEqual(['overview:1', 'line1:3', 'line4:3', 'line7:1', 'check1:4.r1', 'check3:4.r1', 'check5:4.r1', 'check7:2.r1', 'check3:2.r2']);
   const second = requests[2];
   expect(second.fields).toMatchObject({ key: '2', time: '4/4', first_bar: '10', lines: '7' });
   expect(second.files).toEqual([
@@ -117,8 +117,9 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   ]);
   expect(check.sizes[1]).toBeGreaterThan(4000);
   // Bar 8's beat problem went to the double-check, and only line 3 got a second look.
-  expect(check.fields.problems).toContain('Bar 8 adds up to 4.25 beats');
-  expect(JSON.parse(requests[7].fields.line_numbers)).toEqual([3]);
+  const c3 = requests.find((r) => r.fields.mode === 'check' && r.fields.line === '3')!;
+  expect(c3.fields.problems).toContain('Bar 8 adds up to 4.25 beats');
+  expect(JSON.parse(requests[8].fields.line_numbers)).toEqual([3]);
 
   // Review: bar 21 (the reader wasn't sure) is listed and outlined on the music.
   await expect(page.getByTestId('flag-list')).toContainText('Bar 21');

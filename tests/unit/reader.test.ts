@@ -106,15 +106,29 @@ describe('line-by-line reader', () => {
     expect(engraved[0]).toBe(3);
   });
 
-  it('whole page per request (the free-tier default): overview + 1 read + 2 checks', async () => {
+  it('whole page per request (the free-tier default): overview + 1 read + checks in halves', async () => {
     const { calls, send } = fakeServer();
     const progress: ReadProgress[] = [];
     const result = await readPrepared([page], { instrument: 'violin', send, render: async () => blob('png'), onProgress: (p) => progress.push(p), pacer: new RequestPacer({ rpm: 100, ...instant }) });
-    expect(calls.map((c) => `${c.mode}:${c.images.length}`)).toEqual(['overview:1', 'line:7', 'check:14', 'check:2']);
-    expect(JSON.parse(String(calls[3].fields.line_numbers))).toEqual([1]);
+    // Checks carry two pictures per line, so 4 lines each; then line 1's second look.
+    expect(calls.map((c) => `${c.mode}:${c.images.length}`)).toEqual(['overview:1', 'line:7', 'check:8', 'check:6', 'check:2']);
+    expect(JSON.parse(String(calls[4].fields.line_numbers))).toEqual([1]);
     expect(compareScores(result.score, ref).pitch).toBe(1);
     expect(progress.some((p) => p.stage === 'reading' && p.line === 1 && p.lineTo === 7)).toBe(true);
     expect(result.flags.map((f) => f.n)).toEqual([21]);
+  });
+
+  it('keeps the first read when a double-check fails', async () => {
+    const { send } = fakeServer();
+    const failing = async (req: ReaderRequest) => {
+      if (req.mode === 'check') throw new OmrError('unreadable', 'x1', 'unreadable');
+      return send(req);
+    };
+    const result = await readPrepared([page], { instrument: 'violin', send: failing, render: async () => blob('png'), pacer: new RequestPacer({ rpm: 100, ...instant }) });
+    expect(result.score.measures).toHaveLength(21);
+    expect(result.trace.lines[0].checkSkipped).toBe('double-check failed (unreadable)');
+    // Line 1's problems are still flagged for the review screen.
+    expect(result.flags.some((f) => f.n === 2)).toBe(true);
   });
 
   it('passes measured note heads as hints and flags bars that disagree with them', async () => {
