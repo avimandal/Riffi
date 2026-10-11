@@ -1145,3 +1145,61 @@
   max-height: 320px;
   overflow: auto;
 }
+
+/* Review: bars the music reader flagged */
+.bar-flag {
+  position: absolute;
+  border: 3px dashed var(--close);
+  background: color-mix(in srgb, var(--close-bg) 55%, transparent);
+  border-radius: 10px;
+  pointer-events: none;
+  z-index: 2;
+}
+.bar-flag-badge {
+  position: absolute;
+  top: -14px;
+  left: -10px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--close);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bar-flags ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.bar-flags li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.bar-chip.btn {
+  min-height: 36px;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--close);
+  color: #fff;
+  font-size: 15px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .bar-chip.btn,
+  :root:not([data-theme='light']) .bar-flag-badge {
+    color: #1a1200;
+  }
+}
+:root[data-theme='dark'] .bar-chip.btn,
+:root[data-theme='dark'] .bar-flag-badge {
+  color: #1a1200;
+}

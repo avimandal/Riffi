@@ -21,6 +21,8 @@ interface Props {
   className?: string;
   style?: React.CSSProperties;
   onRendered?: () => void;
+  /** Bars to draw attention to (measure index), e.g. ones the music reader wasn't sure about. */
+  highlights?: { index: number; n: number }[];
 }
 
 const BADGE_ICON: Record<Exclude<NoteMark, 'correct'>, string> = {
@@ -30,7 +32,7 @@ const BADGE_ICON: Record<Exclude<NoteMark, 'correct'>, string> = {
 };
 
 export const SheetView = forwardRef<SheetHandle, Props>(function SheetView(
-  { xml, score, marks, selected = null, onTapNote, zoom = 1, label, className, style, onRendered },
+  { xml, score, marks, selected = null, onTapNote, zoom = 1, label, className, style, onRendered, highlights },
   ref,
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -41,6 +43,7 @@ export const SheetView = forwardRef<SheetHandle, Props>(function SheetView(
   const [version, setVersion] = useState(0);
   const [badges, setBadges] = useState<{ x: number; y: number; mark: Exclude<NoteMark, 'correct'> }[]>([]);
   const [ring, setRing] = useState<DOMRect | null>(null);
+  const [boxes, setBoxes] = useState<{ rect: DOMRect; n: number }[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const placeCursor = useCallback((xmlIndex: number | null) => {
@@ -129,8 +132,12 @@ export const SheetView = forwardRef<SheetHandle, Props>(function SheetView(
     }
     setBadges(next);
     setRing(selected !== null ? r.noteRect(selected) : null);
+    setBoxes((highlights ?? []).flatMap((hl) => {
+      const rect = r.measureRect(hl.index);
+      return rect ? [{ rect, n: hl.n }] : [];
+    }));
     placeCursor(cursorAt.current);
-  }, [version, marks, selected, placeCursor]);
+  }, [version, marks, selected, placeCursor, highlights]);
 
   // Keyboard: arrow keys move the selection from note to note.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -168,6 +175,17 @@ export const SheetView = forwardRef<SheetHandle, Props>(function SheetView(
       {badges.map((b, i) => (
         <span key={i} className={`mark-badge ${b.mark}`} style={{ left: b.x, top: b.y }} aria-hidden>
           <Icon name={BADGE_ICON[b.mark]} />
+        </span>
+      ))}
+      {boxes.map((b, i) => (
+        <span
+          key={`flag-${i}`}
+          className="bar-flag"
+          data-testid="bar-flag"
+          style={{ left: b.rect.x - 4, top: b.rect.y - 4, width: b.rect.width + 8, height: b.rect.height + 8 }}
+          aria-hidden
+        >
+          <span className="bar-flag-badge">{b.n}</span>
         </span>
       ))}
       {ring && (

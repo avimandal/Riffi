@@ -98,6 +98,8 @@ export interface DeviceSettings {
   pianoMode: 'auto' | 'live' | 'playThenScore';
   theme: 'system' | 'light' | 'dark';
   firstRunDone: boolean;
+  /** Which AI reads sheet music ('' = the server's default). Only offered when the server has more than one. */
+  readerProvider?: string;
 }
 
 export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {

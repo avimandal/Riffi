@@ -1,0 +1,33 @@
+{
+  "about": "Hand transcription of hermans-hornpipe.webp, checked note by note against note-head positions measured on the photo. Pitches are sounding pitches (key signature applied). Bar 21 (the final 'let ring' double stop) is too small to read with certainty at this resolution, so it is marked uncertain and left out of the accuracy averages.",
+  "title": "Herman's hornpipe",
+  "composer": "Mark O'Connor",
+  "tempo": { "bpm": 70, "beat": "q", "text": "Brightly" },
+  "staves": 1,
+  "lines": [[0, 3], [4, 6], [7, 9], [10, 12], [13, 15], [16, 18], [19, 21]],
+  "uncertain": [21],
+  "measures": [
+    { "n": 0, "pickup": true, "key": 2, "time": "4/4", "clef": "treble", "s1": "A5e" },
+    { "n": 1, "repeat": "start", "s1": "F#5s D5s A4s F#5s E5s C#5s A4s D5s B4s G4s D4s B4s A4s F#4s D4s F#4s" },
+    { "n": 2, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s E4s B4s G#4s B4s A4s C#5s E5s A5s" },
+    { "n": 3, "s1": "F#5s D5s A4s F#5s E5s C#5s A4s D5s B4s Gn4s D4s B4s A4s F#4s D4s F#4s" },
+    { "n": 4, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s E4t F#4t E4t D4t C#4s E4s D4e A5e" },
+    { "n": 5, "s1": "F#5s D5s A4s F#5s E5s C#5s A4s D5s B4s G4s D4s B4s A4s F#4s D4s F#4s" },
+    { "n": 6, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s E4s B4s G#4s B4s A4s C#5s E5s A5s" },
+    { "n": 7, "s1": "F#5s D5s F#5s D5s E5s C#5s A4s D5s B4s Gn4s B4s G4s A4s F#4s D4s F#4s" },
+    { "n": 8, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s E4t F#4t E4t D4t C#4s E4s D4e 3( C#5s D5s D#5s )" },
+    { "n": 9, "s1": "E5s G#5s A5s F#5s E5s C#5s A4s F#4s E4s B4s G#4s B4s A4s C#5s E5s A5s" },
+    { "n": 10, "s1": "F#5s D5s A4s F#5s E5s C#5s A4s C#5s B4t C#5t B4t A4t G#4s B4s A4e 3( C#5s D5s D#5s )" },
+    { "n": 11, "s1": "E5s Cn5s C#5s F#5s E5s C#5s A4s F#4s E4s B4s G#4s B4s A4s C#5s E5s A5s" },
+    { "n": 12, "s1": "F#5s D5s A4s F#5s E5s C#5s A4s C#5s B4t C#5t B4t A4t G#4s B4s A4e 3( C#5s D5s D#5s )" },
+    { "n": 13, "s1": "E5s C#5s A4s A5s F#5s Dn5s A4s F#5s E5s C#5s E5s A5s F#5s D5s~ D5+F#5e" },
+    { "n": 14, "s1": "E5s C#5s E5s A5s F#5s D5s A4s C#5s B4t C#5t B4t A4t G#4s B4s A4e 3( C#5s D5s D#5s )" },
+    { "n": 15, "s1": "E5s C#5s A4s A5s F#5s Dn5s A4s F#5s E5s C#5s E5s A5s F#5s D5s~ D5+F#5e" },
+    { "n": 16, "repeat": "end", "s1": "E5s C#5s E5s A5s F#5s D5s B5s G#5s E5s C#5s B4s G#4s A4e A5e" },
+    { "n": 17, "s1": "F#5s D5s A4s F#5s E5s C#5s A4s D5s B4s Gn4s D4s B4s A4s F#4s D4s F#4s" },
+    { "n": 18, "s1": "E4s C#4s E4s A4s F#4s D4s F#4s A4s E4s B4s G#4s B4s A4s C#5s E5s A5s" },
+    { "n": 19, "s1": "F#5s D5s A4s A5s E5s C#5s A4s D5s B4s Gn4s D4s D5s A4s F#4s D4s F#4s" },
+    { "n": 20, "s1": "E4s C#4s A3s A4s F#4s D4s F#4s A4s E4t F#4t E4t D4t C#4s E4s D4e re" },
+    { "n": 21, "s1": "C#4+D4s D4s~ D4q. rh" }
+  ]
+}

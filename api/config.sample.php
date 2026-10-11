@@ -32,8 +32,14 @@ return [
     // The app's origin (scheme + host, no trailing slash). Browser calls from anywhere else are refused.
     'ALLOWED_ORIGIN' => 'https://riffi.avimandal.com',
 
-    // Abuse protection: pages read per IP per hour (each page is one request).
-    'RATE_LIMIT_PER_HOUR' => 40,
+    // Abuse protection: requests per IP per hour (a page is about 3–4 requests, or ~20 at
+    // one line per request).
+    'RATE_LIMIT_PER_HOUR' => 400,
+    // Requests per minute to the AI, shared by everyone using this server. Keep it under
+    // your provider's limit (Gemini's free tier allows roughly 10 a minute for Flash; check
+    // yours in Google AI Studio → Usage). The app waits its turn instead of failing.
+    'GEMINI_RPM' => 8,
+    'CLAUDE_RPM' => 40,
     // Where the per-IP counters live. null = the system temp folder. Must not be web-accessible.
     'RATE_LIMIT_DIR' => null,
     // Set true behind Cloudflare or another proxy, so the limit uses the visitor's IP
@@ -52,9 +58,16 @@ return [
     'DIAGNOSTICS' => true,
 
     // Advanced.
-    // How hard Gemini "thinks" before answering: 'low' is fast enough for one page.
+    // Lines of music per request. Each line is still its own full-resolution picture.
+    // Gemini's free tier allows only about 20 requests a day per model, so 8 (a whole page,
+    // about 3–4 requests per page) is the default; with a paid key, 1 reads one line at a time.
+    'LINES_PER_REQUEST' => 8,
+
+    // How hard Gemini "thinks" before answering. 'low' answers in seconds; 'medium' can take
+    // a minute per request, too close to the time limit.
     'GEMINI_THINKING' => 'low',
-    'GEMINI_MAX_TOKENS' => 16384,
+    'GEMINI_THINKING_OVERVIEW' => 'low',
+    'GEMINI_MAX_TOKENS' => 65536,
     // Claude only:
     'MAX_TOKENS' => 16384,
     'EFFORT' => 'medium',

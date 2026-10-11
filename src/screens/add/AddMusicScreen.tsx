@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { INSTRUMENTS, UPLOAD_MAX_PAGES, type Instrument } from '../../config';
+import { INSTRUMENTS, UPLOAD_MAX_PAGES } from '../../config';
 import { t } from '../../i18n';
 import { useApp } from '../../app/state';
 import { navigate } from '../../app/router';
@@ -10,17 +10,30 @@ import { ScrollRow } from '../../components/ScrollRow';
 import { newId } from '../../data/db';
 import { countPitchedNotes, parseMusicXml } from '../../sheet/musicxml';
 import { musicXmlFromFile } from '../../sheet/mxl';
-import { OmrError, readSheetMusic } from '../../sheet/omrClient';
+import { OmrError } from '../../sheet/omrClient';
+import { readSheetMusic, type SheetProgress } from '../../sheet/readSheet';
+import { useKidInstrument } from '../../app/useKidInstrument';
 import { CropModal } from './CropModal';
 import { saveDraft } from './draft';
 import { UploadBox } from './UploadBox';
 import { renderPage, thumbnail, type PageDraft } from './imagePrep';
 
+/** Friendly words for where the reader is up to. */
+function progressText(p: SheetProgress): { label: string; note?: string } {
+  const note = t.add.readingNote;
+  if (p.stage === 'preparing') return { label: t.add.preparing(p.page, p.pages), note };
+  const wait = 'waitSeconds' in p && p.waitSeconds ? t.add.waiting(p.waitSeconds) : undefined;
+  if (p.stage === 'overview') return { label: t.add.lookingAtPage(p.page, p.pages), note: wait ?? note };
+  if (p.stage === 'checking') return { label: t.add.checkingLine(p.line ?? 1, p.lineTo, p.round ?? 1), note: wait ?? note };
+  const bars = p.bars ? t.add.barsSoFar(p.bars) : '';
+  return { label: t.add.readingLine(p.line ?? 1, p.lineTo, p.lines ?? 1, p.page, p.pages), note: wait ?? (bars ? `${bars} · ${note}` : note) };
+}
+
 type Busy = { label: string; note?: string } | null;
 
 export default function AddMusicScreen() {
-  const { profile, online } = useApp();
-  const [instrument, setInstrument] = useState<Instrument>(profile?.instrument ?? 'violin');
+  const { online, settings } = useApp();
+  const [instrument, setInstrument] = useKidInstrument();
   const [pages, setPages] = useState<PageDraft[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,20 +96,10 @@ export default function AddMusicScreen() {
   const readMusic = async () => {
     setError(null);
     try {
-      const prepared: Blob[] = [];
-      for (let i = 0; i < pages.length; i++) {
-        setBusy({ label: t.add.preparing(i + 1, pages.length) });
-        prepared.push(await renderPage(pages[i]));
-      }
-      const thumbs = await Promise.all(prepared.map((b) => thumbnail(b)));
-      const result = await readSheetMusic(prepared, instrument, (p) => {
-        setBusy(
-          p.stage === 'sending'
-            ? { label: t.add.uploading(p.page + 1, p.pages), note: t.add.readingNote }
-            : { label: t.add.readingPage(p.page + 1, p.pages), note: `${t.add.barsSoFar(p.bars)} · ${t.add.readingNote}` },
-        );
-      });
-      await saveDraft({ musicxml: result.musicxml, warnings: result.warnings, thumbnails: thumbs, instrument });
+      setBusy({ label: t.add.preparing(1, pages.length), note: t.add.readingNote });
+      const thumbs = await Promise.all(pages.map(async (p) => thumbnail(await renderPage(p, 1200))));
+      const result = await readSheetMusic(pages, instrument, (p) => setBusy(progressText(p)), { provider: settings.readerProvider || undefined });
+      await saveDraft({ musicxml: result.musicxml, warnings: result.warnings, thumbnails: thumbs, instrument, flags: result.flags });
       navigate('/review/draft');
     } catch (e) {
       const kind = e instanceof OmrError ? e.kind : 'server';

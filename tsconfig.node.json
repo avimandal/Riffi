@@ -13,7 +13,7 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "types": ["node"]
+    "types": ["node", "vite/client"]
   },
-  "include": ["vite.config.ts", "playwright.config.ts", "tests/e2e", "tests/fixtures/audio.ts"]
+  "include": ["vite.config.ts", "playwright.config.ts", "playwright.live.config.ts", "tests/e2e", "tests/live", "tests/fixtures/audio.ts"]
 }

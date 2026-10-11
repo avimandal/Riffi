@@ -23,6 +23,7 @@ import {
 } from '../../sheet/editor';
 import { countPitchedNotes, keyName, noteName, parseMusicXml, parseXmlDocument, type ParsedScore } from '../../sheet/musicxml';
 import { clearDraft, loadDraft } from '../add/draft';
+import type { BarFlag } from '../../sheet/reader';
 
 const TIME_SIGS: [number, number][] = [
   [2, 4],
@@ -41,6 +42,8 @@ interface Source {
   thumbnails: string[];
   warnings: string[];
   instrument: Instrument;
+  /** Bars the music reader flagged for a look. */
+  flags: BarFlag[];
 }
 
 export default function ReviewScreen({ id }: { id: string }) {
@@ -60,13 +63,13 @@ export default function ReviewScreen({ id }: { id: string }) {
         const d = await loadDraft();
         if (cancelled) return;
         if (!d) return setMissing(true);
-        setSource({ thumbnails: d.thumbnails, warnings: d.warnings, instrument: d.instrument });
+        setSource({ thumbnails: d.thumbnails, warnings: d.warnings, instrument: d.instrument, flags: d.flags ?? [] });
         setXml(d.musicxml);
       } else {
         const p = await getPiece(id);
         if (cancelled) return;
         if (!p) return setMissing(true);
-        setSource({ pieceId: p.id, thumbnails: p.thumbnails, warnings: [], instrument: p.instrument ?? profile?.instrument ?? 'violin' });
+        setSource({ pieceId: p.id, thumbnails: p.thumbnails, warnings: [], instrument: p.instrument ?? profile?.instrument ?? 'violin', flags: [] });
         setXml(p.musicxml);
       }
     })();
@@ -111,6 +114,13 @@ export default function ReviewScreen({ id }: { id: string }) {
       setSelected(null);
       return h.slice(0, -1);
     });
+  };
+
+  const highlights = useMemo(() => (source?.flags ?? []).map((f) => ({ index: f.index, n: f.n })), [source]);
+  /** Select the first note of a flagged bar (so the editing tools are right there). */
+  const showBar = (index: number) => {
+    const first = score?.notes.filter((n) => n.measureIndex === index).sort((a, b) => a.startQ - b.startQ)[0];
+    if (first) setSelected(first.xmlIndex);
   };
 
   const note = score && selected !== null ? score.notes.find((n) => n.xmlIndex === selected) : undefined;
@@ -181,6 +191,26 @@ export default function ReviewScreen({ id }: { id: string }) {
         </div>
       )}
 
+      {source.flags.length > 0 && (
+        <div className="notice warn bar-flags" role="note" data-testid="flag-list">
+          <Icon name="priority_high" />
+          <div>
+            <strong>{t.review.flagsTitle(source.flags.length)}</strong>
+            <p className="muted" style={{ margin: '2px 0 6px' }}>{t.review.flagsHelp}</p>
+            <ul>
+              {source.flags.map((f) => (
+                <li key={f.index}>
+                  <button className="btn bar-chip" onClick={() => showBar(f.index)}>
+                    {t.review.barLabel(f.n)}
+                  </button>{' '}
+                  <span>{f.reasons.join(' ')}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       <div className="review-settings row">
         <div className="field" style={{ flex: '1 1 240px' }}>
           <label htmlFor="piece-title">{t.review.titleLabel}</label>
@@ -237,6 +267,7 @@ export default function ReviewScreen({ id }: { id: string }) {
               xml={xml}
               score={score}
               selected={selected}
+              highlights={highlights}
               label={t.practice.sheetLabel}
               onTapNote={(i) => {
                 setSelected(i);

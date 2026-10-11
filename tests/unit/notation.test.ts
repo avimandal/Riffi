@@ -5,7 +5,7 @@ import { checkScore, extractJson, mergePages, NotationError, notationToMusicXml,
 import { parseMusicXml } from '../../src/sheet/musicxml';
 import { buildExpectedNotes, expandRepeats } from '../../src/sheet/expected';
 
-const hornpipe = JSON.parse(readFileSync(join(process.cwd(), 'tests/fixtures/sheets/hermans-hornpipe.rn.json'), 'utf8')) as RnScore;
+const hornpipe = JSON.parse(readFileSync(join(process.cwd(), 'tests/fixtures/sheets/hermans-hornpipe.reference.json'), 'utf8')) as RnScore;
 
 describe('Riffi Notation tokens', () => {
   it('reads notes, dots, ties, chords and rests', () => {
@@ -46,8 +46,8 @@ describe('the dense violin fixture (Herman\'s hornpipe photo)', () => {
 
   it('becomes MusicXML that adds up bar by bar', () => {
     const { musicxml, warnings } = notationToMusicXml(hornpipe, 'Violin');
-    // Only the reader's own warnings: every bar adds up to 4 beats.
-    expect(warnings).toEqual(hornpipe.warnings);
+    // Every bar adds up to 4 beats, so nothing to warn about.
+    expect(warnings).toEqual([]);
     const s = parseMusicXml(musicxml);
     expect(s.title).toBe("Herman's hornpipe");
     expect(s.tempoQ).toBe(70);

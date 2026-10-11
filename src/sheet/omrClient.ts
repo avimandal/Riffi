@@ -1,5 +1,5 @@
 import { OMR_ENDPOINT, type Instrument } from '../config';
-import { checkScore, mergePages, NotationError, notationToMusicXml, type RnScore } from './notation';
+import type { RnScore } from './notation';
 
 export interface OmrResult {
   musicxml: string;
@@ -12,6 +12,7 @@ export interface OmrResult {
  * - tooBig: the photo is over the upload limit
  * - rateLimited: Riffi's own hourly limit
  * - busy: the AI provider's limit (e.g. Gemini free tier) or it's overloaded
+ * - quota: the provider's daily free allowance is used up
  * - timeout: the page took too long (deadline, or Cloudflare's 100 s limit)
  * - notConfigured: the server has no key / config
  * - blocked: the server can't reach the AI provider (outgoing connections blocked)
@@ -24,6 +25,7 @@ export type OmrErrorKind =
   | 'tooBig'
   | 'rateLimited'
   | 'busy'
+  | 'quota'
   | 'timeout'
   | 'notConfigured'
   | 'blocked'
@@ -38,6 +40,8 @@ export class OmrError extends Error {
     readonly ref?: string,
     /** Short technical code (e.g. model_not_found, http_524). */
     readonly code?: string,
+    /** Seconds the server asked us to wait before trying again. */
+    readonly retryAfter?: number,
   ) {
     super(code ?? kind);
   }
@@ -57,6 +61,8 @@ export function kindForCode(code: string | undefined): OmrErrorKind {
   switch (code) {
     case 'busy':
       return 'busy';
+    case 'quota':
+      return 'quota';
     case 'timeout':
       return 'timeout';
     case 'rate_limited':
@@ -93,8 +99,8 @@ export function kindForStatus(status: number): OmrErrorKind {
 type StreamLine =
   | { type: 'start' | 'ping'; ref?: string }
   | { type: 'progress'; bars: number }
-  | { type: 'result'; score: RnScore; warnings?: string[]; ref?: string }
-  | { type: 'error'; code: string; message?: string; ref?: string };
+  | { type: 'result'; score?: RnScore; warnings?: string[]; overview?: unknown; line?: unknown; check?: unknown; ref?: string }
+  | { type: 'error'; code: string; message?: string; ref?: string; retry_after?: number | null };
 
 /** Read an NDJSON response line by line. */
 async function* readLines(res: Response): AsyncGenerator<StreamLine> {
@@ -119,21 +125,45 @@ async function* readLines(res: Response): AsyncGenerator<StreamLine> {
   if (buf.trim()) yield JSON.parse(buf) as StreamLine;
 }
 
-/** Read one page. Exported for tests (pass a fetch). */
-export async function readPage(
-  page: Blob,
-  index: number,
-  pages: number,
-  instrument: Instrument,
-  onProgress?: (p: OmrProgress) => void,
-  fetchImpl: typeof fetch = fetch,
-): Promise<{ score: RnScore; warnings: string[] }> {
+export type ReaderMode = 'overview' | 'line' | 'check';
+
+export interface ReaderRequest {
+  mode: ReaderMode;
+  /** Images in the order the mode expects (overview: page; line: crop; check: crop, engraving). */
+  images: { blob: Blob; name: string }[];
+  fields: Record<string, string | number | boolean | null | undefined>;
+}
+
+export interface CallOptions {
+  instrument: Instrument;
+  /** Ask for a particular provider (parent setting); the server checks it has a key. */
+  provider?: string;
+  /** Bars streamed so far (the line being read). */
+  onBars?: (bars: number) => void;
+  fetchImpl?: typeof fetch;
+}
+
+/** The parts of the server's result we use. */
+export interface ReaderResult {
+  overview?: unknown;
+  line?: unknown;
+  check?: unknown;
+  provider?: string;
+  ref?: string;
+}
+
+/**
+ * One request to the reading endpoint (one image or one line: short, so it stays
+ * well inside Cloudflare's 100 s and the host's time limit). Streams NDJSON.
+ */
+export async function callReader(req: ReaderRequest, opts: CallOptions): Promise<ReaderResult> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
   const form = new FormData();
-  form.append('pages[]', page, `page-${index + 1}.jpg`);
-  form.append('instrument', instrument);
-  form.append('page', String(index + 1));
-  form.append('pages', String(pages));
-  onProgress?.({ page: index, pages, stage: 'sending', bars: 0 });
+  form.append('mode', req.mode);
+  form.append('instrument', opts.instrument);
+  if (opts.provider) form.append('provider', opts.provider);
+  for (const [k, v] of Object.entries(req.fields)) if (v !== undefined && v !== null) form.append(k, String(v));
+  for (const img of req.images) form.append('pages[]', img.blob, img.name);
 
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 150_000);
@@ -145,30 +175,28 @@ export async function readPage(
     if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new OmrError('offline');
     throw new OmrError(ctl.signal.aborted ? 'timeout' : 'server', undefined, ctl.signal.aborted ? 'client_timeout' : 'network');
   }
-
   try {
     const type = res.headers.get('content-type') ?? '';
     if (!res.ok || !type.includes('ndjson')) {
       // Our own JSON errors carry a code; anything else (e.g. Cloudflare's HTML 524) doesn't.
-      let body: { code?: string; ref?: string } | null = null;
+      let body: { code?: string; ref?: string; retry_after?: number | null } | null = null;
       try {
         body = type.includes('json') ? await res.json() : null;
       } catch {
         body = null;
       }
-      if (body?.code) throw new OmrError(kindForCode(body.code), body.ref, body.code);
-      throw new OmrError(kindForStatus(res.status), undefined, `http_${res.status}`);
+      const retry = body?.retry_after ?? (Number(res.headers.get('retry-after')) || undefined);
+      if (body?.code) throw new OmrError(kindForCode(body.code), body.ref, body.code, retry ?? undefined);
+      throw new OmrError(kindForStatus(res.status), undefined, `http_${res.status}`, retry ?? undefined);
     }
     let ref: string | undefined;
     for await (const line of readLines(res)) {
       if ('ref' in line && line.ref) ref = line.ref;
-      if (line.type === 'progress') onProgress?.({ page: index, pages, stage: 'reading', bars: line.bars });
-      if (line.type === 'start') onProgress?.({ page: index, pages, stage: 'reading', bars: 0 });
-      if (line.type === 'error') throw new OmrError(kindForCode(line.code), line.ref ?? ref, line.code);
+      if (line.type === 'progress') opts.onBars?.(line.bars);
+      if (line.type === 'error') throw new OmrError(kindForCode(line.code), line.ref ?? ref, line.code, line.retry_after ?? undefined);
       if (line.type === 'result') {
-        const problems = checkScore(line.score);
-        if (problems.length) throw new OmrError('unreadable', line.ref ?? ref, 'bad_notation');
-        return { score: line.score, warnings: line.warnings ?? [] };
+        const r = line as ReaderResult;
+        return { overview: r.overview, line: r.line, check: r.check, provider: r.provider, ref: line.ref ?? ref };
       }
     }
     // The stream ended without a result: the connection was cut (e.g. a proxy timeout).
@@ -181,24 +209,24 @@ export async function readPage(
   }
 }
 
-/**
- * Read prepared pages one request at a time (so no single request runs long),
- * then join them and build MusicXML.
- */
-export async function readSheetMusic(pages: Blob[], instrument: Instrument, onProgress?: (p: OmrProgress) => void, fetchImpl: typeof fetch = fetch): Promise<OmrResult> {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new OmrError('offline');
-  const scores: RnScore[] = [];
-  for (let i = 0; i < pages.length; i++) {
-    const { score, warnings } = await readPage(pages[i], i, pages.length, instrument, onProgress, fetchImpl);
-    scores.push({ ...score, warnings });
-  }
-  const merged = mergePages(scores);
+/** GET ?info=1: which providers have keys, and the request pace. */
+export interface ReaderInfo {
+  providers: string[];
+  default: string | null;
+  rpm: Record<string, number>;
+  /** Lines of music per request (the server's LINES_PER_REQUEST). */
+  linesPerRequest: number;
+}
+
+export async function readerInfo(fetchImpl: typeof fetch = fetch): Promise<ReaderInfo | null> {
   try {
-    const partName = { violin: 'Violin', piano: 'Piano', voice: 'Voice' }[instrument];
-    return notationToMusicXml({ ...merged, staves: instrument === 'piano' ? 2 : merged.staves }, partName);
-  } catch (e) {
-    if (e instanceof NotationError) throw new OmrError('unreadable', undefined, 'bad_notation');
-    throw e;
+    const res = await fetchImpl(`${OMR_ENDPOINT}?info=1`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const j = (await res.json()) as Partial<ReaderInfo>;
+    const per = Number((j as { lines_per_request?: number }).lines_per_request);
+    return { providers: Array.isArray(j.providers) ? j.providers : [], default: j.default ?? null, rpm: j.rpm ?? {}, linesPerRequest: per > 0 ? per : 8 };
+  } catch {
+    return null;
   }
 }
 
