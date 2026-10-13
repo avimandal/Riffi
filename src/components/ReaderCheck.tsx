@@ -1,7 +1,10 @@
 import { useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../data/db';
+import type { ReadTimings } from '../sheet/reader';
 import { t } from '../i18n';
 import { checkMusicReader, type CheckReport } from '../sheet/omrClient';
-import { adviseFromReport, type CheckLine } from '../sheet/readerCheck';
+import { adviseFromReport, timingSummary, type CheckLine } from '../sheet/readerCheck';
 import { Icon } from './Icon';
 
 /** Settings → App → Check music reader. */
@@ -9,6 +12,7 @@ export function ReaderCheck() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ raw: CheckReport; lines: CheckLine[] } | null>(null);
   const [copied, setCopied] = useState(false);
+  const last = useLiveQuery(() => db.settings.get('lastReadTimings'), [])?.value as (ReadTimings & { at: number }) | undefined;
   const run = async () => {
     setBusy(true);
     setCopied(false);
@@ -28,6 +32,11 @@ export function ReaderCheck() {
   return (
     <div className="stack">
       <p className="muted">{t.settings.readerCheckHelp}</p>
+      {last && (
+        <p className="small" data-testid="last-read">
+          <strong>{t.settings.lastRead(new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(last.at))}</strong> {timingSummary(last)}
+        </p>
+      )}
       <button className="btn primary" onClick={run} disabled={busy} data-testid="reader-check">
         <Icon name={busy ? 'graphic_eq' : 'build'} /> {busy ? t.settings.readerChecking : t.settings.readerCheck}
       </button>

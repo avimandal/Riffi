@@ -13,8 +13,12 @@ import { detectStaves, systemBands } from './staffDetect';
 export const FULL_MAX_EDGE = 4096;
 /** The whole-page context picture. */
 export const CONTEXT_MAX_EDGE = 1200;
-/** Width cap for a line crop. */
-export const LINE_MAX_WIDTH = 2400;
+/**
+ * Width cap for a line crop. The recorded accuracy run read crops about 1100 px
+ * wide (the fixture photo's own width), so 1600 keeps a margin above that while a
+ * phone photo uploads about half the pixels it did at 2400.
+ */
+export const LINE_MAX_WIDTH = 1600;
 /** Staff detection runs on a copy this wide. */
 const ANALYSIS_WIDTH = 1400;
 
@@ -27,6 +31,8 @@ export interface PreparedPage {
   bands?: { top: number; bottom: number }[];
   /** False if no staves were found, and the whole page is sent as one "line". */
   detected: boolean;
+  /** How long getting it ready took: the picture work, and measuring the note heads. */
+  timing?: { prepMs: number; headsMs: number };
 }
 
 function grayOf(canvas: HTMLCanvasElement, width: number): { gray: Uint8ClampedArray; w: number; h: number } {
@@ -60,19 +66,25 @@ function shrink(src: HTMLCanvasElement, maxEdge: number): HTMLCanvasElement {
   return crop(src, 0, src.height, Math.round(src.width * scale));
 }
 
-export async function preparePage(page: PageDraft, instrument: Instrument): Promise<PreparedPage> {
+/** `sizes` is for measuring only (the image-size experiment); the app uses the defaults. */
+export async function preparePage(page: PageDraft, instrument: Instrument, sizes: { analysisWidth?: number; lineWidth?: number } = {}): Promise<PreparedPage> {
+  const analysisWidth = sizes.analysisWidth ?? ANALYSIS_WIDTH;
+  const lineWidth = sizes.lineWidth ?? LINE_MAX_WIDTH;
+  const t0 = performance.now();
   const full = await renderPageCanvas(page, FULL_MAX_EDGE);
-  const { gray, w, h } = grayOf(full, ANALYSIS_WIDTH);
+  const { gray, w, h } = grayOf(full, analysisWidth);
   const staves = detectStaves(gray, w, h);
   const bands = systemBands(staves, w, h, instrument === 'piano' ? 2 : 1);
   const k = full.width / w;
   const context = await canvasToJpeg(shrink(full, CONTEXT_MAX_EDGE), 0.8);
   if (bands.length === 0) {
-    return { context, lines: [await canvasToJpeg(shrink(full, LINE_MAX_WIDTH), 0.88)], detected: false };
+    return { context, lines: [await canvasToJpeg(shrink(full, lineWidth), 0.88)], detected: false, timing: { prepMs: performance.now() - t0, headsMs: 0 } };
   }
   const lines: Blob[] = [];
-  for (const b of bands) lines.push(await canvasToJpeg(crop(full, Math.floor(b.y0 * k), Math.ceil(b.y1 * k), LINE_MAX_WIDTH), 0.9));
+  for (const b of bands) lines.push(await canvasToJpeg(crop(full, Math.floor(b.y0 * k), Math.ceil(b.y1 * k), lineWidth), 0.9));
+  const t1 = performance.now();
   const found = findHeads(gray, w, h, staves);
   const heads = bands.map((b) => b.staves.map((st) => found[staves.indexOf(st)] ?? []));
-  return { context, lines, heads, bands: bands.map((b) => ({ top: b.y0 / h, bottom: b.y1 / h })), detected: true };
+  const headsMs = performance.now() - t1;
+  return { context, lines, heads, bands: bands.map((b) => ({ top: b.y0 / h, bottom: b.y1 / h })), detected: true, timing: { prepMs: performance.now() - t0 - headsMs, headsMs } };
 }

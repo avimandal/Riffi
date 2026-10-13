@@ -1278,3 +1278,61 @@
   align-items: center;
   gap: 4px;
 }
+
+/* Reading line by line, live */
+.live-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 650;
+}
+.line-status {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.line-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.line-chip.done {
+  color: var(--success, #1f7a3a);
+}
+.line-chip.failed {
+  background: #fde2e2;
+  color: #9b1c1c;
+}
+.line-chip.reading .icon,
+.line-chip.retrying .icon {
+  animation: riffi-pulse 1.2s ease-in-out infinite;
+}
+@keyframes riffi-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.failed-lines {
+  align-items: flex-start;
+}
+.failed-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.failed-line {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

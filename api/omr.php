@@ -67,9 +67,11 @@ function riffi_default_config(): array
         'GEMINI_API_KEY' => '',
         // Google's alias for the current Flash model. Pin an exact ID if you prefer.
         'GEMINI_MODEL' => 'gemini-flash-latest',
-        // How hard Gemini thinks before answering, for reading and double-checking lines
-        // ('low', 'medium', 'high'; '' = model default). 'medium' can take a minute per
-        // request, too close to the deadline; the measured note heads do the hard part.
+        // How hard Gemini thinks before answering, for reading and double-checking lines:
+        // 'off', 'minimal', 'low', 'medium', 'high', or '' for the model's own default
+        // (usually high: slow). Gemini 3 models can't switch thinking off completely, so
+        // 'off' means 'minimal' there; Gemini 2.5 Flash really turns it off. 'medium' can
+        // take a minute per request; the measured note heads do the hard part.
         'GEMINI_THINKING' => 'low',
         // For the quick look at the whole page (title, key, time signature, pickup).
         'GEMINI_THINKING_OVERVIEW' => 'low',
@@ -84,7 +86,9 @@ function riffi_default_config(): array
         // full-resolution picture. Gemini's free tier allows only ~20 requests a day per
         // model, so the default reads a whole page in one go (about 3–4 requests per page).
         // With a paid key, 1 reads strictly one line at a time.
-        'LINES_PER_REQUEST' => 8,
+        'LINES_PER_REQUEST' => 3,
+        // The same for Claude (paid, so one line per request is affordable and quickest).
+        'CLAUDE_LINES_PER_REQUEST' => 1,
         'MAX_BYTES_PER_PAGE' => 3 * 1024 * 1024,
         'ALLOWED_ORIGIN' => '',
         // Requests per IP per hour. Reading a page line by line takes about 2–3 requests
@@ -101,8 +105,12 @@ function riffi_default_config(): array
         'MAX_TOKENS' => 16384,
         'EFFORT' => 'medium',
         'USE_FALLBACKS' => true,
-        // Whole-request deadline. Cloudflare gives up after 100 s, so stay under it.
-        'REQUEST_SECONDS' => 85,
+        // Deadline for each request (one overview, or one batch of lines). Cloudflare gives
+        // up after 100 s, so stay well under it; a line that runs out is retried on its own.
+        'REQUEST_SECONDS' => 60,
+        // Requests the app may have waiting on the reader at once (still within *_RPM).
+        // Shared hosts limit PHP processes, so keep this small.
+        'PARALLEL_REQUESTS' => 3,
         // Private log of failures (no keys, no images). null = a riffi-logs folder
         // next to (outside) the web root, falling back to the system temp folder. false = off.
         'LOG_FILE' => null,
@@ -194,6 +202,33 @@ final class RiffiLog
                 return;
             }
         }
+    }
+
+    /** The last events of one kind from the log (newest last), for the self-check's timing summary. */
+    public static function recent(string $event, int $max = 20): array
+    {
+        if (self::$file === null || !is_readable(self::$file)) {
+            return [];
+        }
+        $size = (int) @filesize(self::$file);
+        $fh = @fopen(self::$file, 'r');
+        if (!$fh) {
+            return [];
+        }
+        fseek($fh, max(0, $size - 400_000));
+        $tail = (string) stream_get_contents($fh);
+        fclose($fh);
+        $out = [];
+        foreach (explode("\n", $tail) as $line) {
+            if (!str_contains($line, '"event":"' . $event . '"')) {
+                continue;
+            }
+            $j = json_decode($line, true);
+            if (is_array($j)) {
+                $out[] = $j;
+            }
+        }
+        return array_slice($out, -$max);
     }
 
     public static function where(): string
@@ -1040,6 +1075,7 @@ function riffi_http(string $method, string $url, array $headers, ?array $body = 
 final class RiffiGemini implements RiffiProvider
 {
     private bool $thinking = true;
+    private ?string $thinkingLevel = null;
     public const NAME = 'gemini';
 
     public function __construct(private readonly array $cfg)
@@ -1062,15 +1098,22 @@ final class RiffiGemini implements RiffiProvider
     }
 
     /** Gemini 2.5 takes a token budget; Gemini 3 and later take a level. */
+    /** Valid GEMINI_THINKING values ('' = the model's default). */
+    public const THINKING = ['', 'off', 'minimal', 'low', 'medium', 'high'];
+
     public static function thinkingConfig(string $model, string $level): ?array
     {
-        if ($level === '') {
+        $level = strtolower(trim($level));
+        if ($level === '' || !in_array($level, self::THINKING, true)) {
             return null;
         }
         if (str_contains($model, '2.5') || str_contains($model, '2.0')) {
-            return ['thinkingBudget' => ['low' => 512, 'medium' => 2048, 'high' => 8192][$level] ?? 512];
+            // Gemini 2.x uses a token budget; 2.5 Pro can't go to 0, so it gets its minimum.
+            $off = str_contains($model, 'pro') ? 128 : 0;
+            return ['thinkingBudget' => ['off' => $off, 'minimal' => 128, 'low' => 512, 'medium' => 2048, 'high' => 8192][$level]];
         }
-        return ['thinkingLevel' => $level];
+        // Gemini 3 can't switch thinking off; 'minimal' is the least it does.
+        return ['thinkingLevel' => $level === 'off' ? 'minimal' : $level];
     }
 
     /** Build the request body. Pure, for tests. */
@@ -1133,7 +1176,8 @@ final class RiffiGemini implements RiffiProvider
 
     public function generate(string $system, array $turns, RiffiCall $call): array
     {
-        $thinking = $this->thinking ? self::thinkingConfig($this->model(), (string) $this->cfg['GEMINI_THINKING']) : null;
+        $level = $this->thinkingLevel ?? (string) $this->cfg['GEMINI_THINKING'];
+        $thinking = $this->thinking ? self::thinkingConfig($this->model(), $level) : null;
         $text = '';
         $finish = '';
         $blocked = false;
@@ -1149,9 +1193,14 @@ final class RiffiGemini implements RiffiProvider
             },
         );
         if ($status === 400 && $thinking && stripos($err, 'thinking') !== false) {
-            // This model doesn't take that thinking setting: try once without it.
-            RiffiLog::write('gemini_thinking_unsupported', ['model' => $this->model()]);
-            $this->thinking = false;
+            RiffiLog::write('gemini_thinking_unsupported', ['model' => $this->model(), 'level' => $level]);
+            if (!in_array(strtolower($level), ['low', ''], true)) {
+                // e.g. 'minimal' on a model that only takes low/high: 'low' is the next quickest.
+                $this->thinkingLevel = 'low';
+            } else {
+                // This model doesn't take a thinking setting at all: try once without it.
+                $this->thinking = false;
+            }
             return $this->generate($system, $turns, $call);
         }
         if ($status >= 300) {
@@ -1366,6 +1415,13 @@ function riffi_active_provider(array $cfg): string
         return $saved;
     }
     return strtolower((string) $cfg['PROVIDER']);
+}
+
+/** Lines of music per request for this reader. */
+function riffi_lines_per_request(array $cfg, string $provider): int
+{
+    $n = $provider === 'claude' ? ($cfg['CLAUDE_LINES_PER_REQUEST'] ?? $cfg['LINES_PER_REQUEST']) : $cfg['LINES_PER_REQUEST'];
+    return max(1, min(12, (int) $n));
 }
 
 function riffi_provider(array $cfg): RiffiProvider
@@ -1682,7 +1738,8 @@ function riffi_handle_scan(array $cfg): void
 
     // From here on, reply as a stream so the connection never sits silent.
     $out->start();
-    $call = new RiffiCall($started + (float) $cfg['REQUEST_SECONDS'], $out);
+    $call = new RiffiCall($started + (float) max(5, min(90, (int) $cfg['REQUEST_SECONDS'])), $out);
+    $outcome = 'ok';
     try {
         $turn = fn (array $parts) => [['role' => 'user', 'parts' => $parts]];
         switch ($mode) {
@@ -1721,12 +1778,91 @@ function riffi_handle_scan(array $cfg): void
                 $out->send(['type' => 'result', 'score' => $score, 'warnings' => $warnings, 'ref' => RiffiLog::$ref]);
         }
     } catch (RiffiHttpError $e) {
+        $outcome = $e->errorCode;
         RiffiLog::write('scan_failed', ['code' => $e->errorCode, 'detail' => RiffiLog::scrub(substr($e->detail, 0, 500)), 'seconds' => round(microtime(true) - $started, 1)]);
         $out->send(['type' => 'error', 'code' => $e->errorCode, 'message' => $e->getMessage(), 'retry_after' => $e->retryAfter ?: null, 'ref' => RiffiLog::$ref]);
     } catch (Throwable $e) {
+        $outcome = 'server';
         RiffiLog::write('crash', ['error' => RiffiLog::scrub($e->getMessage()), 'line' => $e->getLine()]);
         $out->send(['type' => 'error', 'code' => 'server', 'message' => 'Something went wrong.', 'ref' => RiffiLog::$ref]);
     }
+    // One line per request, for the timing summary in the self-check.
+    RiffiLog::write('request_done', [
+        'mode' => $mode,
+        'outcome' => $outcome,
+        'seconds' => round(microtime(true) - $started, 1),
+        'images' => count($images),
+        'provider' => $provider::NAME,
+        'thinking' => $provider::NAME === 'gemini' ? (string) $cfg['GEMINI_THINKING'] : (string) $cfg['EFFORT'],
+    ]);
+}
+
+/**
+ * POST ?timings=1: the app's own timings for one read (image prep, note-head
+ * measuring, each request, engraving), so the private log shows where the time
+ * went. Numbers and short codes only.
+ */
+function riffi_handle_timings(array $cfg): void
+{
+    riffi_rate_limit($cfg);
+    $raw = substr((string) ($_POST['timings'] ?? ''), 0, 16_000);
+    $j = json_decode($raw, true);
+    if (!is_array($j)) {
+        throw new RiffiHttpError(400, 'timings', 'Send timings as JSON.');
+    }
+    $num = fn ($v) => is_numeric($v) ? round((float) $v, 0) : null;
+    $clean = [];
+    foreach (['pages', 'lines', 'lines_read', 'lines_failed', 'retries', 'total_ms', 'prep_ms', 'heads_ms', 'render_ms', 'wait_ms', 'parallel', 'lines_per_request'] as $k) {
+        $clean[$k] = $num($j[$k] ?? null);
+    }
+    $clean['requests'] = [];
+    foreach (array_slice(is_array($j['requests'] ?? null) ? $j['requests'] : [], 0, 80) as $r) {
+        if (!is_array($r) || !in_array($r['mode'] ?? '', RIFFI_MODES, true)) {
+            continue;
+        }
+        $clean['requests'][] = [
+            'mode' => $r['mode'],
+            'lines' => (int) ($r['lines'] ?? 0),
+            'ms' => (int) ($r['ms'] ?? 0),
+            'ok' => !empty($r['ok']),
+            'code' => preg_match('/^[a-z_0-9]{1,32}$/', (string) ($r['code'] ?? '')) ? (string) $r['code'] : null,
+            'ref' => preg_match('/^[0-9a-f]{6}$/', (string) ($r['ref'] ?? '')) ? (string) $r['ref'] : null,
+        ];
+    }
+    RiffiLog::write('read_timings', $clean);
+    riffi_json(200, ['ok' => true]);
+}
+
+/** Summary of recent reads from the private log, for the self-check. */
+function riffi_timing_summary(): array
+{
+    $reqs = RiffiLog::recent('request_done', 200);
+    $modes = [];
+    foreach ($reqs as $r) {
+        $m = (string) ($r['mode'] ?? '');
+        $modes[$m] ??= ['count' => 0, 'ok' => 0, 'timeouts' => 0, 'seconds' => []];
+        $modes[$m]['count']++;
+        $modes[$m]['ok'] += ($r['outcome'] ?? '') === 'ok' ? 1 : 0;
+        $modes[$m]['timeouts'] += ($r['outcome'] ?? '') === 'timeout' ? 1 : 0;
+        $modes[$m]['seconds'][] = (float) ($r['seconds'] ?? 0);
+    }
+    foreach ($modes as $m => $v) {
+        $sec = $v['seconds'];
+        sort($sec);
+        $modes[$m] = ['count' => $v['count'], 'ok' => $v['ok'], 'timeouts' => $v['timeouts'], 'avg_s' => round(array_sum($sec) / max(1, count($sec)), 1), 'median_s' => $sec[intdiv(count($sec), 2)] ?? 0, 'max_s' => end($sec) ?: 0];
+    }
+    $reads = array_map(fn ($r) => [
+        't' => $r['t'] ?? '',
+        'total_s' => round((float) ($r['total_ms'] ?? 0) / 1000, 1),
+        'prep_s' => round((float) ($r['prep_ms'] ?? 0) / 1000, 1),
+        'heads_s' => round((float) ($r['heads_ms'] ?? 0) / 1000, 1),
+        'render_s' => round((float) ($r['render_ms'] ?? 0) / 1000, 1),
+        'wait_s' => round((float) ($r['wait_ms'] ?? 0) / 1000, 1),
+        'requests' => count($r['requests'] ?? []),
+        'lines' => $r['lines'] ?? null,
+        'lines_failed' => $r['lines_failed'] ?? null,
+    ], RiffiLog::recent('read_timings', 5));
+    return ['requests' => $modes, 'recent_reads' => $reads];
 }
 
 /** GET ?info=1: which providers are set up (never the keys) and the request pace. */
@@ -1742,9 +1878,11 @@ function riffi_handle_info(array $cfg): void
         'names' => RIFFI_PROVIDER_NAMES,
         'can_change' => (string) $cfg['ADMIN_PASSWORD'] !== '',
         'rpm' => ['gemini' => (int) $cfg['GEMINI_RPM'], 'claude' => (int) $cfg['CLAUDE_RPM']],
-        'lines_per_request' => max(1, (int) $cfg['LINES_PER_REQUEST']),
+        'lines_per_request' => riffi_lines_per_request($cfg, $active),
         'check_rounds' => max(0, min(2, (int) $cfg['CHECK_ROUNDS'])),
-        'version' => 3,
+        'parallel' => max(1, min(6, (int) $cfg['PARALLEL_REQUESTS'])),
+        'request_seconds' => max(5, min(90, (int) $cfg['REQUEST_SECONDS'])),
+        'version' => 4,
     ]);
 }
 
@@ -1775,6 +1913,11 @@ function riffi_handle_check(array $cfg): void
         'config' => $GLOBALS['riffi_config_source'],
         'provider' => riffi_active_provider($cfg),
         'request_seconds' => (int) $cfg['REQUEST_SECONDS'],
+        'thinking' => (string) $cfg['GEMINI_THINKING'],
+        'lines_per_request' => riffi_lines_per_request($cfg, riffi_active_provider($cfg)),
+        'parallel' => max(1, (int) $cfg['PARALLEL_REQUESTS']),
+        'check_rounds' => max(0, min(2, (int) $cfg['CHECK_ROUNDS'])),
+        'timings' => riffi_timing_summary(),
         'log' => RiffiLog::where(),
     ];
     try {
@@ -1821,6 +1964,9 @@ function riffi_main(): void
         }
         if ($method === 'POST' && isset($_GET['admin'])) {
             riffi_handle_admin($cfg);
+        }
+        if ($method === 'POST' && isset($_GET['timings'])) {
+            riffi_handle_timings($cfg);
         }
         if ($method !== 'POST') {
             header('Allow: POST, OPTIONS');

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { deleteNote, EDIT_DIVISIONS, insertAfter, serialise, setDuration, setKey, setTime, setTitle, toggleRest, transpose } from '../../src/sheet/editor';
 import { parseMusicXml, parseXmlDocument } from '../../src/sheet/musicxml';
 import { fixtureXml } from '../fixtures/load';
+import { readFileSync } from 'node:fs';
+import { insertLine } from '../../src/sheet/lineInsert';
+import { notationToMusicXml, type RnScore } from '../../src/sheet/notation';
 
 function edit(name: string, op: (d: Document) => void) {
   const doc = parseXmlDocument(fixtureXml(name));
@@ -72,5 +75,30 @@ describe('sheet editor', () => {
     });
     expect(s.measures[0]).toMatchObject({ fifths: -3, beats: 3, beatType: 4 });
     expect(s.title).toBe('My Twinkle');
+  });
+});
+
+describe('putting a line read again back in', () => {
+  const ref = JSON.parse(readFileSync(new URL('../fixtures/sheets/hermans-hornpipe.reference.json', import.meta.url), 'utf8')) as RnScore & { lines: [number, number][] };
+  const notes = (xml: string) => parseMusicXml(xml).notes.map((n) => `${n.measureIndex}:${n.midi ?? 'r'}:${n.startQ}:${n.durationQ}`);
+  const full = notationToMusicXml(ref, 'Violin').musicxml;
+  const ctx = { key: 2, time: '4/4', clef: 'treble' };
+
+  it.each([
+    ['a middle line', 2],
+    ['the first line (with its pickup)', 0],
+    ['the last line', 6],
+  ])('%s lands exactly where it belongs', (_, i) => {
+    const [a, b] = ref.lines[i];
+    const inLine = (m: { n?: number | string }) => Number(m.n) >= a && Number(m.n) <= b;
+    const without = notationToMusicXml({ ...ref, measures: ref.measures.filter((m) => !inLine(m)).map((m, k) => (k === 0 ? { ...m, key: 2, time: '4/4', clef: 'treble' } : m)) }, 'Violin').musicxml;
+    const at = ref.measures.findIndex(inLine);
+    const line = ref.measures.filter(inLine).map(({ key: _k, time: _t, clef: _c, ...m }) => m);
+    const { xml, count } = insertLine(without, at, line, ctx, 'violin');
+    expect(count).toBe(line.length);
+    expect(notes(xml)).toEqual(notes(full));
+    const parsed = parseMusicXml(xml);
+    expect(parsed.measures.map((m) => m.number)).toEqual(parseMusicXml(full).measures.map((m) => m.number));
+    expect(parsed.measures[0].fifths).toBe(2);
   });
 });

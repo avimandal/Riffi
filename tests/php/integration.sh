@@ -160,13 +160,14 @@ last_provider() { grep '"event":"scan_start"' "$TMP/logs/$1.log" | tail -1 | fie
 OUT=$(curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F provider=claude -F "$IMG" "http://127.0.0.1:$PORT_admin/omr.php")
 [ "$(last_line "$OUT" | field type)" = "result" ] && [ "$(last_provider admin)" = "gemini" ] || fail "the app must not be able to choose the provider: $OUT"
 INFO=$(curl -s "http://127.0.0.1:$PORT_admin/omr.php?info=1")
-[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field provider)" = "gemini" ] && [ "$(echo "$INFO" | field can_change)" = "1" ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] && [ "$(echo "$INFO" | field lines_per_request)" = "8" ] && [ "$(echo "$INFO" | field check_rounds)" = "2" ] || fail "info: $INFO"
+[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field provider)" = "gemini" ] && [ "$(echo "$INFO" | field can_change)" = "1" ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] && [ "$(echo "$INFO" | field lines_per_request)" = "3" ] && [ "$(echo "$INFO" | field check_rounds)" = "2" ] || fail "info: $INFO"
 ! echo "$INFO" | grep -q 'AIza\|sk-ant\|sesame' || fail "info leaked a secret"
 [ "$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1" | field can_change)" = "" ] || fail "no ADMIN_PASSWORD should mean no Change button"
 admin() { curl -s -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' "$@" "http://127.0.0.1:$PORT_admin/omr.php?admin=1"; }
 OUT=$(admin -F 'password=open sesame' -F provider=claude)
 [ "$(echo "$OUT" | tail -1)" = "200" ] && [ "$(echo "$OUT" | head -1 | field provider)" = "claude" ] || fail "admin: right password should save the choice: $OUT"
 [ "$(curl -s "http://127.0.0.1:$PORT_admin/omr.php?info=1" | field provider)" = "claude" ] || fail "info should show the saved reader"
+[ "$(curl -s "http://127.0.0.1:$PORT_admin/omr.php?info=1" | field lines_per_request)" = "1" ] || fail "Claude reads one line per request (CLAUDE_LINES_PER_REQUEST)"
 OUT=$(curl -s -N -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F "$IMG" "http://127.0.0.1:$PORT_admin/omr.php")
 [ "$(last_line "$OUT" | field score.title)" = "Tiny tune" ] && [ "$(last_provider admin)" = "claude" ] || fail "scans should use the saved reader: $OUT"
 [ "$(stat -c %a "$TMP/admin-settings.json")" = "600" ] || fail "settings file should be private"
@@ -205,6 +206,18 @@ REPORT=$(last_line "$OUT")
 OUT=$(curl -s -N "http://127.0.0.1:$PORT_missing/omr.php?check=1")
 [ "$(last_line "$OUT" | field report.model_check.status)" = "404" ] || fail "self-check: missing model not reported"
 echo "  ok   self-check: reports model, a test request and streaming pings; spots a missing model"
+
+# --- Timings: every request is logged; the app's own timings too; the self-check sums them up ---
+grep -q '"event":"request_done","mode":"page","outcome":"ok"' "$TMP/logs/fast.log" || fail "request_done not logged"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://riffi.example.com' -F 'timings={"pages":1,"lines":7,"lines_read":6,"lines_failed":1,"total_ms":41000,"prep_ms":1800,"heads_ms":300,"render_ms":900,"requests":[{"mode":"line","lines":3,"ms":21000,"ok":true,"ref":"a1b2c3"},{"mode":"line","lines":1,"ms":60000,"ok":false,"code":"timeout"},{"mode":"evil","ms":1}]}' "http://127.0.0.1:$PORT_fast/omr.php?timings=1")
+[ "$CODE" = "200" ] || fail "timings: expected 200, got $CODE"
+grep '"event":"read_timings"' "$TMP/logs/fast.log" | grep -q '"code":"timeout"' || fail "read_timings not logged"
+! grep '"event":"read_timings"' "$TMP/logs/fast.log" | grep -q 'evil' || fail "timings: unknown modes must be dropped"
+REPORT=$(last_line "$(curl -s -N "http://127.0.0.1:$PORT_fast/omr.php?check=1")")
+[ "$(echo "$REPORT" | field report.timings.recent_reads.0.total_s)" = "41" ] && [ "$(echo "$REPORT" | field report.timings.requests.page.count)" -ge 1 ] || fail "self-check: timing summary: $REPORT"
+INFO=$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1")
+[ "$(echo "$INFO" | field parallel)" = "3" ] && [ "$(echo "$INFO" | field request_seconds)" = "60" ] || fail "info: parallel / request_seconds: $INFO"
+echo "  ok   timings: each request logged, the app's timings logged (sanitised), summed up in the self-check; ?info gives parallel and deadline"
 
 # --- Request guards ---
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://evil.example.com' -F 'instrument=violin' -F "pages[]=@tests/fixtures/sheets/hermans-hornpipe.webp" http://127.0.0.1:$PORT_fast/omr.php)

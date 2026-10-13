@@ -340,3 +340,54 @@ export function noteTypeOf(doc: Document, xmlIndex: number): { type: string; dot
   const n = getNote(doc, xmlIndex);
   return { type: kid(n, 'type')?.textContent?.trim() ?? 'quarter', dots: kids(n, 'dot').length };
 }
+
+/**
+ * Put a line's bars into the music at measure index `at` (the review screen's
+ * "Read this line again"). `lineXml` is that line as its own MusicXML; its first
+ * bar's key, time and clef are dropped unless `keep` says the line really
+ * changes them. Bars are renumbered afterwards. Returns how many bars went in.
+ */
+export function insertMeasures(doc: Document, at: number, lineXml: string, keep: { key?: boolean; time?: boolean; clef?: boolean } = {}): number {
+  const line = new DOMParser().parseFromString(lineXml, 'application/xml');
+  normaliseDivisions(doc);
+  normaliseDivisions(line);
+  const part = doc.getElementsByTagName('part')[0];
+  const from = line.getElementsByTagName('part')[0];
+  if (!part || !from) return 0;
+  const incoming = kids(from, 'measure');
+  const first = incoming[0];
+  const attrs = first && kid(first, 'attributes');
+  // At the very start the new bars must set everything up (divisions, key, time, clef).
+  if (attrs && at > 0) {
+    kid(attrs, 'divisions')?.remove();
+    kid(attrs, 'staves')?.remove();
+    if (!keep.key) kid(attrs, 'key')?.remove();
+    if (!keep.time) kid(attrs, 'time')?.remove();
+    if (!keep.clef) kids(attrs, 'clef').forEach((c) => c.remove());
+    if (attrs.children.length === 0) attrs.remove();
+  }
+  const existing = kids(part, 'measure');
+  const before = existing[at] ?? null;
+  for (const m of incoming) {
+    const node = doc.importNode(m, true) as Element;
+    // Only the piece's first bar can be a pickup.
+    if (at > 0 || m !== first) node.removeAttribute('implicit');
+    part.insertBefore(node, before);
+  }
+  renumberMeasures(doc);
+  return incoming.length;
+}
+
+/** Number bars 1, 2, 3… in order (a pickup stays bar 0). */
+export function renumberMeasures(doc: Document) {
+  for (const part of Array.from(doc.getElementsByTagName('part'))) {
+    let n = 1;
+    kids(part, 'measure').forEach((m, i) => {
+      if (i === 0 && m.getAttribute('implicit') === 'yes') m.setAttribute('number', '0');
+      else {
+        m.removeAttribute('implicit');
+        m.setAttribute('number', String(n++));
+      }
+    });
+  }
+}

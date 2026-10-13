@@ -103,7 +103,10 @@ check('gemini: images as inline_data', $g['contents'][0]['parts'][1]['inline_dat
 check('gemini: assistant turns become "model"', array_column($g['contents'], 'role') === ['user', 'model', 'user']);
 check('gemini: JSON output, limit, low thinking', $g['generationConfig']['maxOutputTokens'] === 1000 && $g['generationConfig']['responseMimeType'] === 'application/json' && $g['generationConfig']['thinkingConfig'] === ['thinkingLevel' => 'low']);
 check('gemini 2.5 thinks by budget', RiffiGemini::thinkingConfig('gemini-2.5-flash', 'low') === ['thinkingBudget' => 512]);
-check('gemini: no thinking setting when off', RiffiGemini::thinkingConfig('gemini-flash-latest', '') === null);
+check('gemini: no thinking setting for the model default', RiffiGemini::thinkingConfig('gemini-flash-latest', '') === null);
+check('gemini 3: off means minimal (it cannot switch thinking off)', RiffiGemini::thinkingConfig('gemini-3.5-flash', 'off') === ['thinkingLevel' => 'minimal'] && RiffiGemini::thinkingConfig('gemini-flash-latest', 'minimal') === ['thinkingLevel' => 'minimal']);
+check('gemini 2.5 Flash: off is a zero budget; Pro keeps its minimum', RiffiGemini::thinkingConfig('gemini-2.5-flash', 'off') === ['thinkingBudget' => 0] && RiffiGemini::thinkingConfig('gemini-2.5-pro', 'off') === ['thinkingBudget' => 128]);
+check('gemini: an unknown thinking value falls back to the model default', RiffiGemini::thinkingConfig('gemini-flash-latest', 'turbo') === null);
 [$txt, $fin, $blk] = RiffiGemini::absorb(['candidates' => [['content' => ['parts' => [['text' => 'hmm', 'thought' => true], ['text' => '{"a"']]]]]], '', '', false);
 [$txt, $fin, $blk] = RiffiGemini::absorb(['candidates' => [['content' => ['parts' => [['text' => ':1}']]], 'finishReason' => 'STOP']]], $txt, $fin, $blk);
 check('gemini: joins streamed chunks and skips thoughts', $txt === '{"a":1}' && RiffiGemini::stopFor($fin, $blk) === 'end');

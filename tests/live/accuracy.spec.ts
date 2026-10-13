@@ -43,8 +43,12 @@ test.beforeAll(async () => {
   'ANTHROPIC_API_KEY' => (string) getenv('ANTHROPIC_API_KEY'),
   'GEMINI_MODEL' => getenv('GEMINI_MODEL') ?: 'gemini-flash-latest',
   'GEMINI_API_URL' => getenv('GEMINI_API_URL') ?: 'https://generativelanguage.googleapis.com/v1beta',
-  'GEMINI_THINKING' => getenv('GEMINI_THINKING') !== false ? getenv('GEMINI_THINKING') : 'medium',
+  'GEMINI_THINKING' => getenv('GEMINI_THINKING') !== false ? getenv('GEMINI_THINKING') : 'low',
   'GEMINI_RPM' => (int) (getenv('GEMINI_RPM') ?: 8),
+  'LINES_PER_REQUEST' => (int) (getenv('LINES_PER_REQUEST') ?: 3),
+  'PARALLEL_REQUESTS' => (int) (getenv('PARALLEL_REQUESTS') ?: 3),
+  'CHECK_ROUNDS' => getenv('CHECK_ROUNDS') !== false ? (int) getenv('CHECK_ROUNDS') : 2,
+  'REQUEST_SECONDS' => 60,
   'ALLOWED_ORIGIN' => 'http://localhost:5174',
   'RATE_LIMIT_DIR' => '${tmp}/rl',
   'LOG_FILE' => '${tmp}/omr.log',
@@ -67,18 +71,20 @@ for (const file of fixtures) {
     const name = file.replace(/\.[^.]+$/, '');
     const ref = JSON.parse(readFileSync(join(sheets, `${name}.reference.json`), 'utf8')) as RnScore & { instrument?: string; uncertain?: number[] };
     const instrument = ref.instrument ?? 'violin';
-    const recorded: { mode: string; page: number; line: number | null; round: number | null; body: string }[] = [];
+    const recorded: { mode: string; page: number; line: number | null; round: number | null; body: string; ms?: number }[] = [];
 
     await page.route('**/__fixture/**', (route) => route.fulfill({ body: readFileSync(join(sheets, file)), contentType: 'image/webp' }));
     await page.route('**/api/omr.php**', async (route) => {
       const req = route.request();
       const url = new URL(req.url());
+      const t0 = Date.now();
       const res = await route.fetch({ url: `http://127.0.0.1:${PORT}/omr.php${url.search}`, timeout: 150_000 });
       const body = await res.text();
+      const ms = Date.now() - t0;
       if (req.method() === 'POST') {
         const form = req.postDataBuffer()?.toString('latin1') ?? '';
         const field = (k: string) => form.match(new RegExp(`name="${k.replace(/[[\]]/g, '\\$&')}"\\r\\n\\r\\n([^\\r]*)`))?.[1];
-        recorded.push({ mode: field('mode') ?? '', page: Number(field('page') ?? 1), line: field('line') ? Number(field('line')) : null, round: field('round') ? Number(field('round')) : null, body });
+        recorded.push({ mode: field('mode') ?? '', page: Number(field('page') ?? 1), line: field('line') ? Number(field('line')) : null, round: field('round') ? Number(field('round')) : null, body, ms });
         const last = body.trim().split('\n').pop() ?? '';
         console.log(`  ${field('mode')}${field('line') ? ` line ${field('line')}` : ''}${field('round') ? ` round ${field('round')}` : ''}: ${last.slice(0, 160)}`);
       }

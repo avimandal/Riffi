@@ -138,6 +138,8 @@ export interface CallOptions {
   instrument: Instrument;
   /** Bars streamed so far (the line being read). */
   onBars?: (bars: number) => void;
+  /** Give up on this request after this long (its own deadline, under Cloudflare's 100 s). */
+  timeoutMs?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -154,6 +156,12 @@ export interface ReaderResult {
  * One request to the reading endpoint (one image or one line: short, so it stays
  * well inside Cloudflare's 100 s and the host's time limit). Streams NDJSON.
  */
+/** Where the app sends a read's timings for the private log. */
+export const OMR_TIMINGS_ENDPOINT = `${OMR_ENDPOINT}?timings=1`;
+
+/** A request's own deadline in the app: just over the server's (REQUEST_SECONDS), under Cloudflare's 100 s. */
+export const REQUEST_TIMEOUT_MS = 95_000;
+
 export async function callReader(req: ReaderRequest, opts: CallOptions): Promise<ReaderResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const form = new FormData();
@@ -163,7 +171,7 @@ export async function callReader(req: ReaderRequest, opts: CallOptions): Promise
   for (const img of req.images) form.append('pages[]', img.blob, img.name);
 
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 150_000);
+  const timer = setTimeout(() => ctl.abort(), opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetchImpl(OMR_ENDPOINT, { method: 'POST', body: form, signal: ctl.signal });
@@ -218,13 +226,17 @@ export interface ReaderInfo {
   linesPerRequest: number;
   /** Double-check rounds per line (the server's CHECK_ROUNDS). */
   checkRounds: number;
+  /** Requests at once (the server's PARALLEL_REQUESTS). */
+  parallel: number;
+  /** The server's deadline for one request (REQUEST_SECONDS). */
+  requestSeconds: number;
 }
 
 export async function readerInfo(fetchImpl: typeof fetch = fetch): Promise<ReaderInfo | null> {
   try {
     const res = await fetchImpl(`${OMR_ENDPOINT}?info=1`, { cache: 'no-store' });
     if (!res.ok) return null;
-    const j = (await res.json()) as { providers?: string[]; provider?: string; default?: string; can_change?: boolean; rpm?: Record<string, number>; lines_per_request?: number; check_rounds?: number };
+    const j = (await res.json()) as { providers?: string[]; provider?: string; default?: string; can_change?: boolean; rpm?: Record<string, number>; lines_per_request?: number; check_rounds?: number; parallel?: number; request_seconds?: number };
     const per = Number(j.lines_per_request);
     const rounds = Number(j.check_rounds);
     return {
@@ -232,8 +244,10 @@ export async function readerInfo(fetchImpl: typeof fetch = fetch): Promise<Reade
       provider: j.provider ?? j.default ?? null,
       canChange: j.can_change === true,
       rpm: j.rpm ?? {},
-      linesPerRequest: per > 0 ? per : 8,
+      linesPerRequest: per > 0 ? per : 3,
       checkRounds: Number.isFinite(rounds) && j.check_rounds !== undefined ? Math.max(0, Math.min(2, rounds)) : 2,
+      parallel: Number(j.parallel) > 0 ? Math.min(6, Number(j.parallel)) : 3,
+      requestSeconds: Number(j.request_seconds) > 0 ? Number(j.request_seconds) : 85,
     };
   } catch {
     return null;

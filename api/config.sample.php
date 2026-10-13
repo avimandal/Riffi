@@ -46,9 +46,13 @@ return [
     // (CF-Connecting-IP / X-Forwarded-For) instead of the proxy's.
     'TRUST_PROXY' => false,
 
-    // How long one page may take, in seconds. Keep it under Cloudflare's 100-second limit.
-    // The endpoint streams keep-alives while it waits, and stops cleanly at this deadline.
-    'REQUEST_SECONDS' => 85,
+    // Deadline for each request (a page overview, or a few lines), in seconds. Keep it well
+    // under Cloudflare's 100-second limit. A line that runs out is read again on its own,
+    // and the rest of the page is always kept.
+    'REQUEST_SECONDS' => 60,
+    // Requests the app sends at once (still within GEMINI_RPM / CLAUDE_RPM). Shared hosts
+    // limit PHP processes, so keep this small.
+    'PARALLEL_REQUESTS' => 3,
 
     // Private error log (never contains your API keys). null = a riffi-logs folder next to
     // the web root, e.g. /home/you/riffi-logs/omr.log; set a full path to choose; false = off.
@@ -70,13 +74,17 @@ return [
     'CHECK_ROUNDS' => 2,
 
     // Advanced.
-    // Lines of music per request. Each line is still its own full-resolution picture.
-    // Gemini's free tier allows only about 20 requests a day per model, so 8 (a whole page,
-    // about 3–4 requests per page) is the default; with a paid key, 1 reads one line at a time.
-    'LINES_PER_REQUEST' => 8,
+    // Lines of music per request (each still its own picture). Fewer lines = shorter
+    // requests that never get near the deadline; more = fewer requests. Gemini's free tier
+    // allows about 20 requests a day per model: 3 means about 4 requests per page.
+    'LINES_PER_REQUEST' => 3,
+    // The same for Claude (paid): one line per request is quickest.
+    'CLAUDE_LINES_PER_REQUEST' => 1,
 
-    // How hard Gemini "thinks" before answering. 'low' answers in seconds; 'medium' can take
-    // a minute per request, too close to the time limit.
+    // How hard Gemini "thinks" before answering: 'off', 'minimal', 'low', 'medium', 'high',
+    // or '' for the model's default (usually high, slow). Gemini 3 can't switch thinking off,
+    // so 'off' means 'minimal' there. 'low' is what the recorded accuracy was measured with;
+    // 'medium' can take a minute per request.
     'GEMINI_THINKING' => 'low',
     'GEMINI_THINKING_OVERVIEW' => 'low',
     'GEMINI_MAX_TOKENS' => 65536,
