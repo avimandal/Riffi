@@ -76,10 +76,10 @@ describe('one reader request over the stream', () => {
 
   it('asks the server which reader is in use and how to pace', async () => {
     const json = (b: unknown, status = 200) => () => new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
-    const info = await readerInfo(fakeFetch([json({ providers: ['gemini', 'claude'], provider: 'claude', can_change: true, rpm: { gemini: 8, claude: 40 }, lines_per_request: 1, check_rounds: 0 })]));
-    expect(info).toEqual({ providers: ['gemini', 'claude'], provider: 'claude', canChange: true, rpm: { gemini: 8, claude: 40 }, linesPerRequest: 1, checkRounds: 0 });
+    const info = await readerInfo(fakeFetch([json({ providers: ['gemini', 'claude'], provider: 'claude', can_change: true, rpm: { gemini: 8, claude: 40 }, lines_per_request: 1, check_rounds: 0, parallel: 4, request_seconds: 60 })]));
+    expect(info).toEqual({ providers: ['gemini', 'claude'], provider: 'claude', canChange: true, rpm: { gemini: 8, claude: 40 }, linesPerRequest: 1, checkRounds: 0, parallel: 4, requestSeconds: 60 });
     // An older server: no admin password, double-check on.
-    expect(await readerInfo(fakeFetch([json({ providers: ['gemini'], default: 'gemini', rpm: {} })]))).toMatchObject({ provider: 'gemini', canChange: false, linesPerRequest: 8, checkRounds: 2 });
+    expect(await readerInfo(fakeFetch([json({ providers: ['gemini'], default: 'gemini', rpm: {} })]))).toMatchObject({ provider: 'gemini', canChange: false, linesPerRequest: 3, checkRounds: 2 });
     expect(await readerInfo(fakeFetch([() => new Response('nope', { status: 404 })]))).toBeNull();
   });
 

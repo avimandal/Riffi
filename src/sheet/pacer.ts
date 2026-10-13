@@ -64,17 +64,18 @@ export class RequestPacer {
     }
   }
 
-  /** Run one request, pacing it and retrying when the reader is busy (or once after a timeout). */
+  /**
+   * Run one request, pacing it and retrying when the reader is busy. A timeout is
+   * not retried here: the reader retries that line with a smaller request instead.
+   */
   async run<T>(fn: () => Promise<T>, onWait?: (seconds: number) => void): Promise<T> {
     const maxRetries = this.opts.maxRetries ?? 5;
-    let timeouts = 0;
     for (let attempt = 0; ; attempt++) {
       await this.slot(onWait);
       try {
         return await fn();
       } catch (e) {
         if (!(e instanceof OmrError)) throw e;
-        if (e.kind === 'timeout' && timeouts++ === 0 && attempt < maxRetries) continue;
         if (e.kind !== 'busy' || attempt >= maxRetries) throw e;
         const backoff = Math.min(90, 5 * 2 ** attempt);
         await this.wait(Math.max(e.retryAfter ?? 0, backoff) * 1000, onWait);

@@ -10,35 +10,18 @@ import { ScrollRow } from '../../components/ScrollRow';
 import { newId } from '../../data/db';
 import { countPitchedNotes, parseMusicXml } from '../../sheet/musicxml';
 import { musicXmlFromFile } from '../../sheet/mxl';
-import { OmrError } from '../../sheet/omrClient';
-import { readSheetMusic, type SheetProgress } from '../../sheet/readSheet';
+import { clearLiveRead, getLiveRead, startLiveRead, useLiveRead } from './liveRead';
 import { useKidInstrument } from '../../app/useKidInstrument';
 import { CropModal } from './CropModal';
 import { saveDraft } from './draft';
 import { UploadBox } from './UploadBox';
-import { renderPage, thumbnail, type PageDraft } from './imagePrep';
-
-/** The photos kept with a piece, to check the notes against later (big enough to read, small enough to store). */
-const PHOTO_MAX_EDGE = 1600;
-
-/** Friendly words for where the reader is up to. */
-function progressText(p: SheetProgress): { label: string; note?: string } {
-  const note = t.add.readingNote;
-  if (p.stage === 'preparing') return { label: t.add.preparing(p.page, p.pages), note };
-  const wait = 'waitSeconds' in p && p.waitSeconds ? t.add.waiting(p.waitSeconds) : undefined;
-  if (p.stage === 'overview') return { label: t.add.lookingAtPage(p.page, p.pages), note: wait ?? note };
-  if (p.stage === 'checking') return { label: t.add.checkingLine(p.line ?? 1, p.lineTo, p.round ?? 1), note: wait ?? note };
-  const bars = p.bars ? t.add.barsSoFar(p.bars) : '';
-  return { label: t.add.readingLine(p.line ?? 1, p.lineTo, p.lines ?? 1, p.page, p.pages), note: wait ?? (bars ? `${bars} · ${note}` : note) };
-}
-
-type Busy = { label: string; note?: string } | null;
+import type { PageDraft } from './imagePrep';
+import { errorText } from './readText';
 
 export default function AddMusicScreen() {
   const { online } = useApp();
   const [instrument, setInstrument] = useKidInstrument();
   const [pages, setPages] = useState<PageDraft[]>([]);
-  const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [cropping, setCropping] = useState<PageDraft | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -47,10 +30,23 @@ export default function AddMusicScreen() {
   const retake = useRef<HTMLInputElement>(null);
   const retakeId = useRef<string | null>(null);
 
-  // Release preview URLs when leaving.
+  // Release preview URLs when leaving (unless a read in progress still needs the photos).
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
-  useEffect(() => () => pagesRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl)), []);
+  useEffect(() => () => pagesRef.current.forEach((p) => getLiveRead()?.pages.includes(p) || URL.revokeObjectURL(p.previewUrl)), []);
+
+  // Back from a read that couldn't read anything: the photos are still here, with the reason.
+  const live = useLiveRead();
+  useEffect(() => {
+    const l = getLiveRead();
+    if (l?.status !== 'failed') return;
+    setPages(l.pages);
+    setInstrument(l.instrument);
+    setError(errorText(l.error));
+    clearLiveRead();
+    // Once, on arrival.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addFiles = (files: File[]) => {
     if (files.length === 0) return;
@@ -96,31 +92,11 @@ export default function AddMusicScreen() {
     }
   };
 
-  const readMusic = async () => {
+  const readMusic = () => {
     setError(null);
-    try {
-      setBusy({ label: t.add.preparing(1, pages.length), note: t.add.readingNote });
-      const thumbs: string[] = [];
-      const photos: string[] = [];
-      for (const p of pages) {
-        const big = await renderPage(p, PHOTO_MAX_EDGE);
-        thumbs.push(await thumbnail(big));
-        photos.push(await thumbnail(big, PHOTO_MAX_EDGE));
-      }
-      const result = await readSheetMusic(pages, instrument, (p) => setBusy(progressText(p)));
-      const photoLines = result.lineBars.flatMap(({ page, line, from, to }) => {
-        const band = result.pages[page - 1]?.bands?.[line - 1] ?? (result.pages[page - 1]?.detected === false ? { top: 0, bottom: 1 } : undefined);
-        return band ? [{ page: page - 1, top: band.top, bottom: band.bottom, from, to }] : [];
-      });
-      await saveDraft({ musicxml: result.musicxml, warnings: result.warnings, thumbnails: thumbs, photos, photoLines, reader: result.trace.provider, instrument, flags: result.flags });
-      navigate('/review/draft');
-    } catch (e) {
-      const kind = e instanceof OmrError ? e.kind : 'server';
-      const ref = e instanceof OmrError && (e.ref || e.code) ? ` ${t.add.errors.reference(e.ref ?? e.code ?? '')}` : '';
-      setError(`${t.add.errors[kind]}${ref}`);
-    } finally {
-      setBusy(null);
-    }
+    // The review screen shows each line as it arrives; the read carries on there.
+    void startLiveRead(pages, instrument);
+    navigate('/review/draft');
   };
 
   // Drag to reorder (pointer events so it works with fingers too).
@@ -134,13 +110,15 @@ export default function AddMusicScreen() {
     if (from >= 0 && to >= 0) move(from, to);
   };
 
-  if (busy) {
+  if (live?.status === 'reading') {
     return (
       <div className="page" aria-live="polite">
         <div className="card stack busy-card" style={{ alignItems: 'center', textAlign: 'center' }}>
           <span className="spinner" aria-hidden />
-          <h2>{busy.label}</h2>
-          {busy.note && <p className="muted">{busy.note}</p>}
+          <h2>{t.add.stillReading}</h2>
+          <button className="btn primary big" onClick={() => navigate('/review/draft')}>
+            <Icon name="visibility" /> {t.add.seeIt}
+          </button>
         </div>
       </div>
     );

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { compareScores } from '../../src/sheet/accuracy';
 import { OmrError, type ReaderRequest, type ReaderResult } from '../../src/sheet/omrClient';
 import { RequestPacer } from '../../src/sheet/pacer';
-import { markPickup, normaliseLine, readPrepared, type ReadProgress } from '../../src/sheet/reader';
+import { markPickup, normaliseLine, readPrepared, type PartialRead, type ReadProgress } from '../../src/sheet/reader';
 import type { RnMeasure, RnScore } from '../../src/sheet/notation';
 
 const ref = JSON.parse(readFileSync(new URL('../fixtures/sheets/hermans-hornpipe.reference.json', import.meta.url), 'utf8')) as RnScore & {
@@ -115,8 +115,8 @@ describe('line-by-line reader', () => {
     const progress: ReadProgress[] = [];
     const result = await readPrepared([page], { instrument: 'violin', send, render: async () => blob('png'), onProgress: (p) => progress.push(p), pacer: new RequestPacer({ rpm: 100, ...instant }) });
     // Checks carry two pictures per line, so 4 lines each; then line 1's second look.
-    expect(calls.map((c) => `${c.mode}:${c.images.length}`)).toEqual(['overview:1', 'line:7', 'check:8', 'check:6', 'check:2']);
-    expect(JSON.parse(String(calls[4].fields.line_numbers))).toEqual([1]);
+    expect(calls.map((c) => `${c.mode}:${c.images.length}`).sort()).toEqual(['check:2', 'check:6', 'check:8', 'line:7', 'overview:1']);
+    expect(JSON.parse(String(calls.at(-1)!.fields.line_numbers))).toEqual([1]);
     expect(compareScores(result.score, ref).pitch).toBe(1);
     expect(progress.some((p) => p.stage === 'reading' && p.line === 1 && p.lineTo === 7)).toBe(true);
     expect(result.flags.map((f) => f.n)).toEqual([21]);
@@ -160,6 +160,86 @@ describe('line-by-line reader', () => {
     expect(bar2?.reasons.join(' ')).toContain('no sharp or flat');
     // The short first bar wasn't marked as a pickup, but it's full here (bar 1), so no pickup.
     expect(result.score.measures[0].n).toBe(1);
+  });
+
+  it('never throws away the page: a line that times out is retried smaller, then reported; the rest is kept', async () => {
+    const { calls, send } = fakeServer();
+    const shrunk: string[] = [];
+    const flaky = async (req: ReaderRequest) => {
+      // Line 3 always times out; lines 5–6 time out only when read together.
+      if (req.mode === 'line' && req.images.some((i) => i.name === 'line-1-3.jpg')) throw new OmrError('timeout', 'tt0003', 'timeout');
+      if (req.mode === 'line' && req.images.length > 1 && Number(req.fields.line) === 5) throw new OmrError('timeout', 'tt0005', 'client_timeout');
+      return send(req);
+    };
+    const partial: PartialRead[] = [];
+    const result = await readPrepared([page], {
+      instrument: 'violin',
+      linesPerRequest: 2,
+      checkRounds: 0,
+      send: flaky,
+      shrink: async (b) => {
+        shrunk.push(await b.text());
+        return blob('small');
+      },
+      onLine: (p) => partial.push(p),
+      pacer: new RequestPacer({ rpm: 100, ...instant }),
+    });
+    // Lines 3–4 and 5–6 failed together → each tried once alone (a smaller request); only line 3 failed again.
+    expect(shrunk).toEqual([]);
+    expect(result.failed.map((f) => [f.page, f.line, f.kind, f.ref])).toEqual([[1, 3, 'timeout', 'tt0003']]);
+    // Its bars would start after lines 1–2 (line 1 comes back without its pickup here: 3 + 3 bars).
+    expect(result.failed[0].at).toBe(6);
+    expect(result.failed[0].job).toMatchObject({ line: 3, ctx: { key: 2, time: '4/4' }, printedFirstBar: 7 });
+    // Everything else is there, numbered on from the gap.
+    expect(result.lineBars.map((l) => l.line)).toEqual([1, 2, 4, 5, 6, 7]);
+    expect(result.score.measures).toHaveLength(21 - 3);
+    expect(result.timings).toMatchObject({ lines: 7, lines_read: 6, lines_failed: 1, retries: 4 });
+    expect(result.timings.requests.filter((r) => !r.ok).map((r) => r.code)).toEqual(expect.arrayContaining(['timeout', 'client_timeout']));
+    // Lines showed up as they arrived, with the failed one marked.
+    expect(partial.some((p) => p.musicxml && p.lines.some((l) => l.status === 'waiting' || l.status === 'reading'))).toBe(true);
+    expect(partial.at(-1)!.lines.find((l) => l.line === 3)?.status).toBe('failed');
+    expect(calls.filter((c) => c.mode === 'line').length).toBe(4 + 4 - 3);
+
+    // Read one at a time, a line that fails is tried once more with a smaller picture.
+    shrunk.length = 0;
+    const one = await readPrepared([page], { instrument: 'violin', linesPerRequest: 1, checkRounds: 0, send: flaky, shrink: async (b) => (shrunk.push(await b.text()), blob('small')), pacer: new RequestPacer({ rpm: 100, ...instant }) });
+    expect(shrunk).toEqual(['line 3']);
+    expect(one.failed.map((f) => f.line)).toEqual([3]);
+  });
+
+  it('a used-up daily quota stops sending but keeps the lines already read; with nothing read it says why', async () => {
+    const { send } = fakeServer();
+    let lineCalls = 0;
+    const quota = async (req: ReaderRequest) => {
+      if (req.mode === 'line' && ++lineCalls > 2) throw new OmrError('quota', 'qq0001', 'quota');
+      return send(req);
+    };
+    const result = await readPrepared([page], { instrument: 'violin', linesPerRequest: 1, parallel: 1, checkRounds: 0, send: quota, pacer: new RequestPacer({ rpm: 100, ...instant }) });
+    expect(result.lineBars.map((l) => l.line)).toEqual([1, 2]);
+    expect(result.failed.map((f) => f.line)).toEqual([3, 4, 5, 6, 7]);
+    // No retries once the quota is gone.
+    expect(lineCalls).toBe(3);
+    const none = async (req: ReaderRequest) => {
+      if (req.mode === 'line') throw new OmrError('quota', 'qq0002', 'quota');
+      return send(req);
+    };
+    await expect(readPrepared([page], { instrument: 'violin', checkRounds: 0, send: none, pacer: new RequestPacer({ rpm: 100, ...instant }) })).rejects.toMatchObject({ kind: 'quota' });
+  });
+
+  it('reads lines in parallel, never more at once than allowed', async () => {
+    const { send } = fakeServer();
+    let inFlight = 0;
+    let most = 0;
+    const slow = async (req: ReaderRequest) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return send(req);
+    };
+    const result = await readPrepared([page], { instrument: 'violin', linesPerRequest: 1, parallel: 3, checkRounds: 0, send: slow, pacer: new RequestPacer({ rpm: 100, ...instant }) });
+    expect(most).toBe(3);
+    expect(compareScores(result.score, { ...ref }).pitch).toBeGreaterThan(0.9);
   });
 
   it('numbers bars in order and spots an unmarked pickup', () => {

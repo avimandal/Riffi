@@ -26,7 +26,13 @@ import {
   type NoteType,
 } from '../../sheet/editor';
 import { countPitchedNotes, keyName, noteName, parseMusicXml, parseXmlDocument, type ParsedScore } from '../../sheet/musicxml';
-import { clearDraft, loadDraft } from '../add/draft';
+import { clearDraft, loadDraft, saveDraft, type FailedLineDraft } from '../add/draft';
+import { useLiveRead } from '../add/liveRead';
+import { rereadLine } from '../../sheet/readSheet';
+import { insertLine } from '../../sheet/lineInsert';
+import type { RnMeasure } from '../../sheet/notation';
+import type { BarProblem } from '../../sheet/checks';
+import { LiveReview } from './LiveReview';
 import type { BarFlag } from '../../sheet/reader';
 
 const TIME_SIGS: [number, number][] = [
@@ -74,14 +80,23 @@ export default function ReviewScreen({ id, query }: { id: string; query?: URLSea
   const [title, setTitleText] = useState('');
   const [showPhoto, setShowPhoto] = useState(false);
   const [missing, setMissing] = useState(false);
+  const [failed, setFailed] = useState<FailedLineDraft[]>([]);
+  const [rereading, setRereading] = useState<Set<string>>(new Set());
+  const [rereadProblem, setRereadProblem] = useState<string | null>(null);
+  // A page still being read shows here line by line; the draft loads once it's done.
+  const live = useLiveRead();
+  const liveHere = id === 'draft' && !!live;
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (id === 'draft') {
+        if (liveHere) return;
         const d = await loadDraft();
         if (cancelled) return;
         if (!d) return setMissing(true);
+        setMissing(false);
+        setFailed(d.failedLines ?? []);
         setSource({ thumbnails: d.thumbnails, photos: d.photos ?? [], photoLines: d.photoLines ?? [], reader: d.reader, warnings: d.warnings, instrument: d.instrument, flags: d.flags ?? [], originalXml: d.musicxml });
         setXml(d.musicxml);
       } else {
@@ -107,7 +122,7 @@ export default function ReviewScreen({ id, query }: { id: string; query?: URLSea
     return () => {
       cancelled = true;
     };
-  }, [id, profile?.instrument]);
+  }, [id, profile?.instrument, liveHere]);
 
   const { score, parseError } = useMemo((): { score: ParsedScore | null; parseError: string | null } => {
     if (!xml) return { score: null, parseError: null };
@@ -209,9 +224,68 @@ export default function ReviewScreen({ id, query }: { id: string; query?: URLSea
 
   const cancel = () => (editing && dirty ? setLeaving(true) : editing ? done() : navigate('/home'));
 
+  const lineKey = (f: FailedLineDraft) => `${f.page}-${f.line}`;
+  const order = (f: { page: number; line: number }) => f.page * 1000 + f.line;
+
+  /** Read failed lines again (all at once), then put each one's bars where they belong. */
+  const reread = async (lines: FailedLineDraft[]) => {
+    if (!source || !xml) return;
+    setRereadProblem(null);
+    setRereading((r) => new Set([...r, ...lines.map(lineKey)]));
+    const results = await Promise.all(
+      lines.map((f) =>
+        rereadLine(f.job, source.instrument).then(
+          (r) => ({ f, measures: r.measures, problems: r.problems }),
+          () => null,
+        ),
+      ),
+    );
+    setRereading((r) => new Set([...r].filter((k) => !lines.some((f) => lineKey(f) === k))));
+    const got = results.filter((r): r is { f: FailedLineDraft; measures: RnMeasure[]; problems: BarProblem[] } => !!r && r.measures.length > 0);
+    if (got.length < lines.length) setRereadProblem(t.review.rereadFailed);
+    if (got.length === 0) return;
+    // Latest line first, so putting one in never moves the place of another still to go in.
+    let cur = xml;
+    let left = failed;
+    let photoLines = source.photoLines;
+    let flags = source.flags;
+    const fresh: { index: number; reasons: string[] }[] = [];
+    for (const g of [...got].sort((a, b) => order(b.f) - order(a.f))) {
+      const { xml: next, count } = insertLine(cur, g.f.at, g.measures, g.f.job.ctx, source.instrument);
+      const at = g.f.at;
+      cur = next;
+      left = left.filter((x) => x !== g.f).map((x) => (order(x) > order(g.f) ? { ...x, at: x.at + count } : x));
+      photoLines = [
+        ...photoLines.map((l) => (l.from >= at ? { ...l, from: l.from + count, to: l.to + count } : l)),
+        ...(g.f.band ? [{ page: g.f.page - 1, top: g.f.band.top, bottom: g.f.band.bottom, from: at, to: at + count - 1 }] : []),
+      ];
+      flags = flags.map((x) => (x.index >= at ? { ...x, index: x.index + count } : x));
+      fresh.forEach((x) => x.index >= at && (x.index += count));
+      g.problems.forEach((p) => {
+        const k = g.measures.findIndex((m) => Number(m.n) === p.n);
+        if (k >= 0) fresh.push({ index: at + k, reasons: [p.message.replace(/^Bar \d+/, 'This bar')] });
+      });
+    }
+    // Bar numbers moved on: name each flagged bar by its new number.
+    const parsed = parseMusicXml(cur);
+    const barNo = (i: number) => Number(parsed.measures[i]?.number ?? i + 1);
+    flags = [...flags.map((x) => ({ ...x, n: barNo(x.index), reasons: x.reasons.map((r) => r.replace(`bar ${x.n}`, `bar ${barNo(x.index)}`).replace(`Bar ${x.n}`, `Bar ${barNo(x.index)}`)) })), ...fresh.map((x) => ({ index: x.index, n: barNo(x.index), reasons: x.reasons }))].sort((a, b) => a.index - b.index);
+    setHistory([]);
+    setSelected(null);
+    setXml(cur);
+    setFailed(left);
+    setSource({ ...source, photoLines, flags, originalXml: source.piece ? source.originalXml : cur });
+    if (!source.piece) {
+      const d = await loadDraft();
+      if (d) await saveDraft({ ...d, musicxml: cur, failedLines: left, photoLines, flags });
+    }
+  };
+
   const pagePhotos = source ? (source.photos.length ? source.photos : source.thumbnails) : [];
   const line = note && source ? source.photoLines.find((l) => note.measureIndex >= l.from && note.measureIndex <= l.to) : undefined;
   const barPhoto = line && source?.photos[line.page] ? { src: source.photos[line.page], top: line.top, bottom: line.bottom } : null;
+
+  if (liveHere && live) return <LiveReview live={live} />;
 
   if (missing) {
     return (
@@ -277,6 +351,43 @@ export default function ReviewScreen({ id, query }: { id: string; query?: URLSea
             </ul>
           </div>
         </div>
+      )}
+
+      {failed.length > 0 && (
+        <section className="notice warn failed-lines" role="note" data-testid="failed-lines">
+          <Icon name="priority_high" />
+          <div className="stack" style={{ flex: 1 }}>
+            <div>
+              <strong>{t.review.failedTitle(failed.length)}</strong>
+              <p className="muted" style={{ margin: '2px 0 0' }}>{t.review.failedHelp}</p>
+            </div>
+            <ul className="failed-list">
+              {failed.map((f) => {
+                const busy = rereading.has(lineKey(f));
+                const photo = source.photos[f.page - 1];
+                return (
+                  <li key={lineKey(f)} className="failed-line">
+                    <strong>{t.review.lineLabel(f.page, f.line, Math.max(1, source.photos.length, ...failed.map((x) => x.page)))}</strong>
+                    {photo && f.band && <PhotoSlice src={photo} top={f.band.top} bottom={f.band.bottom} alt={t.review.lineLabel(f.page, f.line, 2)} />}
+                    <button className="btn primary" onClick={() => void reread([f])} disabled={busy} data-testid="read-again">
+                      <Icon name={busy ? 'graphic_eq' : 'replay'} /> {busy ? t.review.rereading : t.review.readAgain}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {failed.length > 1 && (
+              <button className="btn" onClick={() => void reread(failed.filter((f) => !rereading.has(lineKey(f))))} disabled={rereading.size > 0} data-testid="retry-all">
+                <Icon name="replay" /> {t.review.retryAll}
+              </button>
+            )}
+            {rereadProblem && (
+              <p className="notice error" role="alert" style={{ margin: 0 }}>
+                {rereadProblem}
+              </p>
+            )}
+          </div>
+        </section>
       )}
 
       <div className="review-settings row">

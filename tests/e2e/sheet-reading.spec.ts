@@ -55,9 +55,14 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   const requests: ReturnType<typeof parseForm>[] = [];
+  const timings: string[] = [];
   await page.route('**/api/omr.php**', async (route) => {
     const req = route.request();
     if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], default: 'gemini', rpm: { gemini: 100 }, lines_per_request: 3 }) });
+    if (req.url().includes('timings=1')) {
+      timings.push(parseForm(req).fields.timings);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    }
     const form = parseForm(req);
     requests.push(form);
     saveParts(req, `${requests.length}`);
@@ -94,7 +99,7 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   await page.evaluate(() => {
     const seen: string[] = [];
     (window as unknown as { riffiSeen: string[] }).riffiSeen = seen;
-    new MutationObserver(() => document.querySelectorAll('h2').forEach((h) => seen.push(h.textContent ?? ''))).observe(document.body, { subtree: true, childList: true, characterData: true });
+    new MutationObserver(() => document.querySelectorAll('h2, .live-progress').forEach((h) => seen.push(h.textContent ?? ''))).observe(document.body, { subtree: true, childList: true, characterData: true });
   });
   await page.getByRole('button', { name: 'Read my music' }).click();
   await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible({ timeout: 90_000 });
@@ -104,9 +109,12 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
 
   // The browser found all seven lines on the real photo and sent each one as its own crop, three lines per request.
   const modes = requests.map((r) => `${r.fields.mode}${r.fields.line ?? ''}:${r.files.length}${r.fields.round ? `.r${r.fields.round}` : ''}`);
-  expect(modes).toEqual(['overview:1', 'line1:3', 'line4:3', 'line7:1', 'check1:4.r1', 'check3:4.r1', 'check5:4.r1', 'check7:2.r1', 'check3:2.r2']);
-  const second = requests[2];
-  expect(second.fields).toMatchObject({ key: '2', time: '4/4', first_bar: '10', lines: '7' });
+  // Requests go out in parallel, so they can finish in any order.
+  expect([...modes].sort()).toEqual(['check1:4.r1', 'check3:2.r2', 'check3:4.r1', 'check5:4.r1', 'check7:2.r1', 'line1:3', 'line4:3', 'line7:1', 'overview:1']);
+  const second = requests.find((r) => r.fields.mode === 'line' && r.fields.line === '4')!;
+  // Read at the same time as line 1, so it goes with the overview's key and time (and no guessed bar number).
+  expect(second.fields).toMatchObject({ key: '2', time: '4/4', lines: '7' });
+  expect(second.fields.first_bar).toBeUndefined();
   expect(second.files).toEqual([
     { name: 'line-1-4.jpg', type: 'image/jpeg' },
     { name: 'line-1-5.jpg', type: 'image/jpeg' },
@@ -126,7 +134,7 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   // Bar 8's beat problem went to the double-check, and only line 3 got a second look.
   const c3 = requests.find((r) => r.fields.mode === 'check' && r.fields.line === '3')!;
   expect(c3.fields.problems).toContain('Bar 8 adds up to 4.25 beats');
-  expect(JSON.parse(requests[8].fields.line_numbers)).toEqual([3]);
+  expect(JSON.parse(requests.find((r) => r.fields.round === '2')!.fields.line_numbers)).toEqual([3]);
 
   // Review: bar 21 (the reader wasn't sure) is listed and outlined on the music.
   await expect(page.getByTestId('flag-list')).toContainText('Bar 21');
@@ -181,4 +189,74 @@ test("the instrument defaults to the kid's own, even after a reload", async ({ p
   await page.reload();
   await expect(page.getByRole('button', { name: 'Singing' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Piano' })).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('a line that times out never sinks the page: the rest is kept, and the missing lines can be read again', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  let fixed = false;
+  await page.route('**/api/omr.php**', async (route) => {
+    const req = route.request();
+    if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], provider: 'gemini', rpm: { gemini: 100 }, lines_per_request: 3, check_rounds: 0, parallel: 3, request_seconds: 60 }) });
+    if (req.url().includes('timings=1')) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    const form = parseForm(req);
+    if (form.fields.mode === 'overview') {
+      return route.fulfill(ndjson({ type: 'start', ref: 'ov0002' }, { type: 'result', overview: { title: "Herman's hornpipe", key: 2, time: '4/4', pickup: true, pickup_notes: 'A5e', lines: 7 }, provider: 'gemini', ref: 'ov0002' }));
+    }
+    // Lines 3 and 5 time out (alone or with others) until the server is "fixed".
+    const names = form.files.map((f) => f.name);
+    if (!fixed && names.some((n) => n === 'line-1-3.jpg' || n === 'line-1-5.jpg')) {
+      return route.fulfill(ndjson({ type: 'start', ref: '4f5f60' }, { type: 'ping' }, { type: 'error', code: 'timeout', message: 'That page took too long to read.', ref: '4f5f60' }));
+    }
+    const first = Number(form.fields.line);
+    const lines = form.files.map((_, k) => ({ line: first + k, measures: lineBars(first + k), unsure: [] }));
+    return route.fulfill(ndjson({ type: 'start', ref: 'ln0002' }, { type: 'result', line: { lines }, provider: 'gemini', ref: 'ln0002' }));
+  });
+
+  await newKid(page, 'Kai');
+  await page.getByTestId('add-music').click();
+  await page.getByTestId('photo-input').setInputFiles(photo);
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { riffiSeen: string[] }).riffiSeen = seen;
+    new MutationObserver(() => document.querySelectorAll('[data-status] > span:last-child').forEach((h) => seen.push(h.textContent ?? ''))).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+  });
+  await page.getByRole('button', { name: 'Read my music' }).click();
+  await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible({ timeout: 90_000 });
+  // While reading, each line's progress showed, and lines 3 and 5 were marked.
+  const seen = await page.evaluate(() => (window as unknown as { riffiSeen: string[] }).riffiSeen);
+  expect(seen).toContain('Line 1: Done');
+  expect(seen).toContain("Line 3: Couldn't read");
+
+  // The rest of the page is there; the two missing lines are listed with their photo.
+  const panel = page.getByTestId('failed-lines');
+  await expect(panel).toContainText("2 lines couldn't be read");
+  if (process.env.RIFFI_SHOTS) await page.screenshot({ path: `${process.env.RIFFI_SHOTS}/failed-lines.png`, fullPage: true });
+  await expect(panel.getByRole('img')).toHaveCount(2);
+  await expect(page.getByTestId('sheet')).toHaveAttribute('data-rendered', 'true', { timeout: 20_000 });
+  const bars = () => page.evaluate(() => document.querySelectorAll('[data-testid="sheet"] .vf-stavenote').length);
+  const before = await bars();
+
+  // Still failing: it says so and keeps the button.
+  await panel.getByTestId('read-again').first().click();
+  await expect(panel.getByRole('alert')).toContainText("Still couldn't read it");
+  // Fixed: "Retry all failed lines" puts both lines back in place.
+  fixed = true;
+  await panel.getByTestId('retry-all').click();
+  await expect(panel).toHaveCount(0, { timeout: 20_000 });
+  await expect.poll(bars).toBeGreaterThan(before);
+  await page.getByTestId('looks-good').click();
+  await expect(page.getByTestId('start-stop')).toBeVisible();
+  const measures = await page.evaluate(
+    () =>
+      new Promise<number>((done) => {
+        const open = indexedDB.open('riffi');
+        open.onsuccess = () => {
+          const all = open.result.transaction('pieces').objectStore('pieces').getAll();
+          all.onsuccess = () => done(((all.result[0] as { musicxml: string }).musicxml.match(/<measure /g) ?? []).length);
+        };
+      }),
+  );
+  expect(measures).toBe(22);
+  expect(errors).toEqual([]);
 });
