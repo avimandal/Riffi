@@ -101,6 +101,10 @@ describe('line-by-line reader', () => {
     // Flags: only the bar the reader was unsure about.
     expect(result.flags).toEqual([{ index: 21, n: 21, reasons: ["The music reader wasn't sure about bar 21."] }]);
     expect(result.musicxml).toContain("<work-title>Herman's hornpipe</work-title>");
+    // Which line of the photo each bar came from (for checking against the photo later), and who read it.
+    expect(result.lineBars[0]).toEqual({ page: 1, line: 1, from: 0, to: 3 });
+    expect(result.lineBars.at(-1)?.to).toBe(result.score.measures.length - 1);
+    expect(result.trace.provider).toBe('gemini');
     expect(progress.some((p) => p.stage === 'checking' && p.line === 1 && p.round === 2)).toBe(true);
     expect(progress.some((p) => p.stage === 'reading' && p.line === 7 && p.lines === 7)).toBe(true);
     expect(engraved[0]).toBe(3);

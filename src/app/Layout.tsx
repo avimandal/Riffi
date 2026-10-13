@@ -1,18 +1,22 @@
 import type { ReactNode } from 'react';
 import { t } from '../i18n';
 import { Icon } from '../components/Icon';
+import { PlayerSwitch } from '../components/PlayerSwitch';
 import { Link } from './router';
 import { useApp } from './state';
 
 const NAV = [
   { to: '/home', icon: 'home', label: () => t.nav.home },
   { to: '/progress', icon: 'insights', label: () => t.nav.progress },
-  { to: '/', icon: 'group', label: () => t.nav.switchKid },
-  { to: '/parent', icon: 'shield_person', label: () => t.nav.parents },
+  { to: '/gadget', icon: 'music_note', label: () => t.nav.tools },
+  { to: '/settings', icon: 'settings', label: () => t.nav.settings },
 ];
 
+/** The main screens (the bottom tabs) show the player switcher at the top. */
+const MAIN = new Set(NAV.map((n) => n.to));
+
 export function Layout({ children, nav, path }: { children: ReactNode; nav: boolean; path: string }) {
-  const { online } = useApp();
+  const { online, profile } = useApp();
   return (
     <>
       <a className="skip-link" href="#main">
@@ -24,6 +28,11 @@ export function Layout({ children, nav, path }: { children: ReactNode; nav: bool
         </div>
       )}
       <main id="main" tabIndex={-1}>
+        {nav && profile && MAIN.has(path) && (
+          <div className="app-topbar">
+            <PlayerSwitch />
+          </div>
+        )}
         {children}
       </main>
       {nav && (

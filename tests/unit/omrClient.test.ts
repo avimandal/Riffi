@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { callReader, kindForCode, kindForStatus, readerInfo, type ReaderRequest } from '../../src/sheet/omrClient';
+import { adminReader, callReader, kindForCode, kindForStatus, readerInfo, type ReaderRequest } from '../../src/sheet/omrClient';
 import { adviseFromReport } from '../../src/sheet/readerCheck';
 
 /** A Response that streams NDJSON lines in small, uneven chunks (like a real proxy). */
@@ -24,14 +24,13 @@ const blob = new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: 'image/jpeg'
 
 describe('one reader request over the stream', () => {
   const req: ReaderRequest = { mode: 'line', images: [{ blob, name: 'line-1-1.jpg' }], fields: { line: 1, lines: 7, key: 2, time: '4/4', pickup: undefined } };
-  const call = (f: typeof fetch, provider?: string) => callReader(req, { instrument: 'violin', provider, fetchImpl: f });
+  const call = (f: typeof fetch) => callReader(req, { instrument: 'violin', fetchImpl: f });
 
   it('sends the mode, fields and image, streams progress and returns the result', async () => {
     let sent: FormData | undefined;
     const bars: number[] = [];
     const res = await callReader(req, {
       instrument: 'violin',
-      provider: 'claude',
       onBars: (b) => bars.push(b),
       fetchImpl: (async (_u: string, init: RequestInit) => {
         sent = init.body as FormData;
@@ -41,7 +40,8 @@ describe('one reader request over the stream', () => {
     expect(bars).toEqual([1, 3]);
     expect(res).toMatchObject({ line: { measures: [{ n: 1, s1: 'D5w' }] }, provider: 'claude', ref: 'aaa111' });
     expect(sent?.get('mode')).toBe('line');
-    expect(sent?.get('provider')).toBe('claude');
+    // The server alone decides which AI reads (site-wide setting).
+    expect(sent?.has('provider')).toBe(false);
     expect(sent?.get('key')).toBe('2');
     expect(sent?.has('pickup')).toBe(false);
     expect((sent?.get('pages[]') as File).name).toBe('line-1-1.jpg');
@@ -74,10 +74,31 @@ describe('one reader request over the stream', () => {
     await expect(run).rejects.toMatchObject({ kind: 'timeout', ref: 'dead00', code: 'stream_cut' });
   });
 
-  it('asks the server which providers are set up', async () => {
-    const info = await readerInfo(fakeFetch([() => new Response(JSON.stringify({ providers: ['gemini', 'claude'], default: 'gemini', rpm: { gemini: 8, claude: 40 } }), { headers: { 'content-type': 'application/json' } })]));
-    expect(info).toEqual({ providers: ['gemini', 'claude'], default: 'gemini', rpm: { gemini: 8, claude: 40 }, linesPerRequest: 8 });
+  it('asks the server which reader is in use and how to pace', async () => {
+    const json = (b: unknown, status = 200) => () => new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
+    const info = await readerInfo(fakeFetch([json({ providers: ['gemini', 'claude'], provider: 'claude', can_change: true, rpm: { gemini: 8, claude: 40 }, lines_per_request: 1, check_rounds: 0 })]));
+    expect(info).toEqual({ providers: ['gemini', 'claude'], provider: 'claude', canChange: true, rpm: { gemini: 8, claude: 40 }, linesPerRequest: 1, checkRounds: 0 });
+    // An older server: no admin password, double-check on.
+    expect(await readerInfo(fakeFetch([json({ providers: ['gemini'], default: 'gemini', rpm: {} })]))).toMatchObject({ provider: 'gemini', canChange: false, linesPerRequest: 8, checkRounds: 2 });
     expect(await readerInfo(fakeFetch([() => new Response('nope', { status: 404 })]))).toBeNull();
+  });
+
+  it('changes the music reader only with the admin password', async () => {
+    const json = (b: unknown, status = 200) => () => new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
+    let sent: FormData | undefined;
+    let url = '';
+    const ok = await adminReader('pw', 'claude', (async (u: string, init: RequestInit) => {
+      url = u;
+      sent = init.body as FormData;
+      return json({ ok: true, provider: 'claude', providers: ['gemini', 'claude'] })();
+    }) as unknown as typeof fetch);
+    expect(ok).toEqual({ ok: true, provider: 'claude', providers: ['gemini', 'claude'] });
+    expect(url).toContain('?admin=1');
+    expect([sent?.get('password'), sent?.get('provider')]).toEqual(['pw', 'claude']);
+    expect(await adminReader('x', undefined, fakeFetch([json({ code: 'wrong_password', attempts_left: 3 }, 403)]))).toEqual({ ok: false, reason: 'wrong', attemptsLeft: 3 });
+    expect(await adminReader('x', undefined, fakeFetch([json({ code: 'locked', retry_after: 600 }, 429)]))).toEqual({ ok: false, reason: 'locked', minutes: 10 });
+    expect(await adminReader('x', undefined, fakeFetch([json({ code: 'admin_off' }, 403)]))).toEqual({ ok: false, reason: 'off' });
+    expect(await adminReader('x', undefined, fakeFetch([() => new Response('<html>', { status: 502 })]))).toEqual({ ok: false, reason: 'server' });
   });
 
   it('maps every server code to a category', () => {

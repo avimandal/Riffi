@@ -47,7 +47,7 @@ async function newKid(page: Page, name: string, instrument?: string) {
   await page.getByLabel('Name').fill(name);
   if (instrument) await page.getByRole('button', { name: instrument }).click();
   await page.getByRole('button', { name: "Let's go!" }).click();
-  await expect(page.getByRole('heading', { name: new RegExp(`${name}!`) })).toBeVisible();
+  await expect(page.getByTestId('switch-player')).toContainText(`${name}!`);
 }
 
 test('reads a photographed page line by line, double-checks, and flags bars to look at', async ({ page }) => {
@@ -90,10 +90,17 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   await newKid(page, 'Ivy');
   await page.getByTestId('add-music').click();
   await page.getByTestId('photo-input').setInputFiles(photo);
+  // Progress headings can be on screen for well under a second, so record every one shown.
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { riffiSeen: string[] }).riffiSeen = seen;
+    new MutationObserver(() => document.querySelectorAll('h2').forEach((h) => seen.push(h.textContent ?? ''))).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
   await page.getByRole('button', { name: 'Read my music' }).click();
-  await expect(page.getByRole('heading', { name: /Reading lines \d–\d of 7/ })).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByRole('heading', { name: /Double-checking line/ })).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible({ timeout: 90_000 });
+  const seen = await page.evaluate(() => (window as unknown as { riffiSeen: string[] }).riffiSeen);
+  expect(seen.some((h) => /Reading lines \d–\d of 7/.test(h))).toBe(true);
+  expect(seen.some((h) => /Double-checking line/.test(h))).toBe(true);
 
   // The browser found all seven lines on the real photo and sent each one as its own crop, three lines per request.
   const modes = requests.map((r) => `${r.fields.mode}${r.fields.line ?? ''}:${r.files.length}${r.fields.round ? `.r${r.fields.round}` : ''}`);
@@ -128,6 +135,42 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   await expect(page.getByTestId('bar-flag')).toHaveCount(1);
   await page.getByRole('button', { name: 'Bar 21' }).click();
   await expect(page.getByText(/Selected:/)).toBeVisible();
+  // The line of the photo that bar came from sits right by the editing tools, and the reader is named.
+  await expect(page.getByTestId('bar-photo')).toContainText('Your photo, bar 21');
+  await expect(page.getByTestId('bar-photo').getByRole('img')).toBeVisible();
+  await expect(page.getByTestId('reader-used')).toHaveText(/Read by Gemini \(free\)/);
+  await page.getByTestId('looks-good').click();
+  await expect(page.getByTestId('start-stop')).toBeVisible();
+
+  // Later: edit it from the Practice screen's menu. The photos are still there.
+  await page.getByTestId('practice-more').click();
+  await page.getByTestId('edit-music').click();
+  await expect(page.getByRole('heading', { name: 'Edit music' })).toBeVisible();
+  await expect(page.getByTestId('sheet')).toHaveAttribute('data-rendered', 'true', { timeout: 20_000 });
+  await expect(page.getByTestId('reader-used')).toBeVisible();
+  await page.getByTestId('sheet').locator('.vf-notehead').nth(5).click();
+  await expect(page.getByTestId('bar-photo')).toContainText(/Your photo, bar \d+/);
+  if (process.env.RIFFI_SHOTS) await page.screenshot({ path: `${process.env.RIFFI_SHOTS}/edit-music.png`, fullPage: true });
+  await page.getByRole('button', { name: 'Higher' }).click();
+  // Cancel with an unsaved change asks first.
+  await page.getByTestId('cancel-edit').click();
+  const leave = page.getByRole('dialog', { name: 'Leave without saving?' });
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await page.getByLabel('Title').fill('Hermans hornpipe (fixed)');
+  await page.getByTestId('looks-good').click();
+  await expect(page.getByRole('heading', { name: 'Hermans hornpipe (fixed)' })).toBeVisible();
+
+  // Download the music file, and open it again through Add music.
+  await page.getByTestId('practice-more').click();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download-music').click()]);
+  expect(download.suggestedFilename()).toBe('Hermans-hornpipe-fixed.musicxml');
+  const file = test.info().outputPath('downloaded.musicxml');
+  await download.saveAs(file);
+  await page.goto('/add');
+  await page.getByTestId('musicxml-input').setInputFiles(file);
+  await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible();
+  await expect(page.getByLabel('Title')).toHaveValue('Hermans hornpipe (fixed)');
+  await expect(page.getByTestId('sheet')).toHaveAttribute('data-rendered', 'true', { timeout: 20_000 });
   expect(errors).toEqual([]);
 });
 

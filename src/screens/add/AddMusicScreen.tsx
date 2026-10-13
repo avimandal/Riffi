@@ -18,6 +18,9 @@ import { saveDraft } from './draft';
 import { UploadBox } from './UploadBox';
 import { renderPage, thumbnail, type PageDraft } from './imagePrep';
 
+/** The photos kept with a piece, to check the notes against later (big enough to read, small enough to store). */
+const PHOTO_MAX_EDGE = 1600;
+
 /** Friendly words for where the reader is up to. */
 function progressText(p: SheetProgress): { label: string; note?: string } {
   const note = t.add.readingNote;
@@ -32,7 +35,7 @@ function progressText(p: SheetProgress): { label: string; note?: string } {
 type Busy = { label: string; note?: string } | null;
 
 export default function AddMusicScreen() {
-  const { online, settings } = useApp();
+  const { online } = useApp();
   const [instrument, setInstrument] = useKidInstrument();
   const [pages, setPages] = useState<PageDraft[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
@@ -97,9 +100,19 @@ export default function AddMusicScreen() {
     setError(null);
     try {
       setBusy({ label: t.add.preparing(1, pages.length), note: t.add.readingNote });
-      const thumbs = await Promise.all(pages.map(async (p) => thumbnail(await renderPage(p, 1200))));
-      const result = await readSheetMusic(pages, instrument, (p) => setBusy(progressText(p)), { provider: settings.readerProvider || undefined });
-      await saveDraft({ musicxml: result.musicxml, warnings: result.warnings, thumbnails: thumbs, instrument, flags: result.flags });
+      const thumbs: string[] = [];
+      const photos: string[] = [];
+      for (const p of pages) {
+        const big = await renderPage(p, PHOTO_MAX_EDGE);
+        thumbs.push(await thumbnail(big));
+        photos.push(await thumbnail(big, PHOTO_MAX_EDGE));
+      }
+      const result = await readSheetMusic(pages, instrument, (p) => setBusy(progressText(p)));
+      const photoLines = result.lineBars.flatMap(({ page, line, from, to }) => {
+        const band = result.pages[page - 1]?.bands?.[line - 1] ?? (result.pages[page - 1]?.detected === false ? { top: 0, bottom: 1 } : undefined);
+        return band ? [{ page: page - 1, top: band.top, bottom: band.bottom, from, to }] : [];
+      });
+      await saveDraft({ musicxml: result.musicxml, warnings: result.warnings, thumbnails: thumbs, photos, photoLines, reader: result.trace.provider, instrument, flags: result.flags });
       navigate('/review/draft');
     } catch (e) {
       const kind = e instanceof OmrError ? e.kind : 'server';

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { t } from '../../i18n';
 import { useApp } from '../../app/state';
-import { navigate } from '../../app/router';
 import { Icon } from '../../components/Icon';
 import { SevenSeg } from '../../components/SevenSeg';
 import { prefersReducedMotion } from '../../components/motion';
@@ -462,9 +461,6 @@ export default function GadgetScreen() {
       <div className="gadget-layout">
       <div className="gadget-col">
       <div className="topbar">
-        <button className="btn icon-only round ghost" aria-label={t.common.back} onClick={() => navigate('/home')}>
-          <Icon name="arrow_back" />
-        </button>
         <h1>{t.gadget.title}</h1>
       </div>
 

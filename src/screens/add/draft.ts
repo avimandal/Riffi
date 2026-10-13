@@ -1,4 +1,5 @@
 import type { Instrument } from '../../config';
+import type { PhotoLine } from '../../data/types';
 import type { BarFlag } from '../../sheet/reader';
 import { db } from '../../data/db';
 
@@ -10,6 +11,10 @@ export interface Draft {
   instrument: Instrument;
   /** Bars to look at: still failing a check, or the reader wasn't sure. */
   flags?: BarFlag[];
+  photos?: string[];
+  photoLines?: PhotoLine[];
+  /** Which music reader read the photos. */
+  reader?: string;
 }
 
 export async function saveDraft(d: Draft) {

@@ -171,8 +171,38 @@ check('check: mismatches need corrected bars', $problem !== null);
 
 $both = ['PROVIDER' => 'gemini', 'GEMINI_API_KEY' => 'g', 'ANTHROPIC_API_KEY' => 'a'] + riffi_default_config();
 check('lists configured providers, default first', riffi_configured_providers($both) === ['gemini', 'claude'] && riffi_configured_providers(['PROVIDER' => 'claude'] + $both) === ['claude', 'gemini']);
-check('honours a per-scan provider choice', riffi_provider($both, 'claude') instanceof RiffiClaude);
-check('ignores a choice without a key', riffi_provider(['ANTHROPIC_API_KEY' => ''] + $both, 'claude') instanceof RiffiGemini);
+$settingsFile = sys_get_temp_dir() . '/riffi-unit-settings-' . getmypid() . '.json';
+$both['SETTINGS_FILE'] = $settingsFile;
+$both['LOG_FILE'] = false;
+@unlink($settingsFile);
+check('no saved choice: PROVIDER', riffi_provider($both) instanceof RiffiGemini);
+riffi_save_settings($both, ['provider' => 'claude']);
+check('uses the reader saved in Settings', riffi_provider($both) instanceof RiffiClaude);
+check('ignores a saved reader without a key', riffi_provider(['ANTHROPIC_API_KEY' => ''] + $both) instanceof RiffiGemini);
+check('settings file is private', (fileperms($settingsFile) & 0777) === 0600);
+@unlink($settingsFile);
+$_SERVER['REMOTE_ADDR'] = '203.0.113.' . (getmypid() % 250);
+$adm = ['ADMIN_PASSWORD' => 'pw', 'RATE_LIMIT_DIR' => sys_get_temp_dir() . '/riffi-unit-rl-' . getmypid()] + $both;
+try {
+    riffi_check_admin($adm, 'pw');
+    check('admin: right password passes', true);
+} catch (RiffiHttpError $e) {
+    check('admin: right password passes', false);
+}
+try {
+    riffi_check_admin($adm, 'pw ');
+    check('admin: near miss is refused', false);
+} catch (RiffiHttpError $e) {
+    check('admin: near miss is refused', $e->errorCode === 'wrong_password' && $e->detail === '4');
+}
+try {
+    riffi_check_admin(['ADMIN_PASSWORD' => ''] + $adm, '');
+    check('admin: off without a password', false);
+} catch (RiffiHttpError $e) {
+    check('admin: off without a password', $e->errorCode === 'admin_off');
+}
+array_map('unlink', glob($adm['RATE_LIMIT_DIR'] . '/*') ?: []);
+@rmdir($adm['RATE_LIMIT_DIR']);
 
 fwrite(STDOUT, $failures === 0 ? "All PHP unit tests passed\n" : "$failures PHP test(s) failed\n");
 exit($failures === 0 ? 0 : 1);

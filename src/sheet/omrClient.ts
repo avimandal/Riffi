@@ -136,8 +136,6 @@ export interface ReaderRequest {
 
 export interface CallOptions {
   instrument: Instrument;
-  /** Ask for a particular provider (parent setting); the server checks it has a key. */
-  provider?: string;
   /** Bars streamed so far (the line being read). */
   onBars?: (bars: number) => void;
   fetchImpl?: typeof fetch;
@@ -161,7 +159,6 @@ export async function callReader(req: ReaderRequest, opts: CallOptions): Promise
   const form = new FormData();
   form.append('mode', req.mode);
   form.append('instrument', opts.instrument);
-  if (opts.provider) form.append('provider', opts.provider);
   for (const [k, v] of Object.entries(req.fields)) if (v !== undefined && v !== null) form.append(k, String(v));
   for (const img of req.images) form.append('pages[]', img.blob, img.name);
 
@@ -209,28 +206,73 @@ export async function callReader(req: ReaderRequest, opts: CallOptions): Promise
   }
 }
 
-/** GET ?info=1: which providers have keys, and the request pace. */
+/** GET ?info=1: which providers have keys, which one reads (site-wide), and the request pace. */
 export interface ReaderInfo {
   providers: string[];
-  default: string | null;
+  /** The reader every scan uses (chosen in Settings with the admin password, or the config's PROVIDER). */
+  provider: string | null;
+  /** Whether the server has an admin password, so the reader can be changed. */
+  canChange: boolean;
   rpm: Record<string, number>;
   /** Lines of music per request (the server's LINES_PER_REQUEST). */
   linesPerRequest: number;
+  /** Double-check rounds per line (the server's CHECK_ROUNDS). */
+  checkRounds: number;
 }
 
 export async function readerInfo(fetchImpl: typeof fetch = fetch): Promise<ReaderInfo | null> {
   try {
     const res = await fetchImpl(`${OMR_ENDPOINT}?info=1`, { cache: 'no-store' });
     if (!res.ok) return null;
-    const j = (await res.json()) as Partial<ReaderInfo>;
-    const per = Number((j as { lines_per_request?: number }).lines_per_request);
-    return { providers: Array.isArray(j.providers) ? j.providers : [], default: j.default ?? null, rpm: j.rpm ?? {}, linesPerRequest: per > 0 ? per : 8 };
+    const j = (await res.json()) as { providers?: string[]; provider?: string; default?: string; can_change?: boolean; rpm?: Record<string, number>; lines_per_request?: number; check_rounds?: number };
+    const per = Number(j.lines_per_request);
+    const rounds = Number(j.check_rounds);
+    return {
+      providers: Array.isArray(j.providers) ? j.providers : [],
+      provider: j.provider ?? j.default ?? null,
+      canChange: j.can_change === true,
+      rpm: j.rpm ?? {},
+      linesPerRequest: per > 0 ? per : 8,
+      checkRounds: Number.isFinite(rounds) && j.check_rounds !== undefined ? Math.max(0, Math.min(2, rounds)) : 2,
+    };
   } catch {
     return null;
   }
 }
 
-/** The self-check report from GET ?check=1, plus how the reply streamed. */
+export type AdminResult =
+  | { ok: true; provider: string; providers: string[] }
+  | { ok: false; reason: 'wrong'; attemptsLeft: number }
+  | { ok: false; reason: 'locked'; minutes: number }
+  | { ok: false; reason: 'off' | 'offline' | 'server' };
+
+/**
+ * POST ?admin=1: check the admin password (the server allows 5 wrong tries per
+ * 15 minutes) and, with a provider, change the music reader for the whole site.
+ */
+export async function adminReader(password: string, provider?: string, fetchImpl: typeof fetch = fetch): Promise<AdminResult> {
+  const form = new FormData();
+  form.append('password', password);
+  if (provider) form.append('provider', provider);
+  let res: Response;
+  try {
+    res = await fetchImpl(`${OMR_ENDPOINT}?admin=1`, { method: 'POST', body: form, cache: 'no-store' });
+  } catch {
+    return { ok: false, reason: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'server' };
+  }
+  let j: { ok?: boolean; code?: string; provider?: string; providers?: string[]; attempts_left?: number; retry_after?: number | null } = {};
+  try {
+    j = await res.json();
+  } catch {
+    return { ok: false, reason: 'server' };
+  }
+  if (res.ok && j.ok && j.provider) return { ok: true, provider: j.provider, providers: j.providers ?? [] };
+  if (j.code === 'wrong_password') return { ok: false, reason: 'wrong', attemptsLeft: Math.max(0, Number(j.attempts_left ?? 0)) };
+  if (j.code === 'locked') return { ok: false, reason: 'locked', minutes: Math.max(1, Math.ceil(Number(j.retry_after ?? 900) / 60)) };
+  if (j.code === 'admin_off') return { ok: false, reason: 'off' };
+  return { ok: false, reason: 'server' };
+}
+
 export interface CheckReport {
   report: Record<string, unknown>;
   /** ms from request to the first ping, and to the second (streamed if they're ~1 s apart). */

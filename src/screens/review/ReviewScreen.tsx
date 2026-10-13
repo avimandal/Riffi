@@ -5,7 +5,11 @@ import { navigate } from '../../app/router';
 import { Icon } from '../../components/Icon';
 import { SheetView } from '../../components/SheetView';
 import { playTone } from '../../audio/tone';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { readerName } from '../../components/MusicReader';
+import { downloadMusicXml } from '../../data/download';
 import { getPiece, savePiece } from '../../data/repo';
+import type { Piece, PhotoLine } from '../../data/types';
 import type { Instrument } from '../../config';
 import {
   deleteNote,
@@ -38,16 +42,31 @@ const TIME_SIGS: [number, number][] = [
 ];
 
 interface Source {
-  pieceId?: string;
+  /** Set when editing a piece that's already saved. */
+  piece?: Piece;
   thumbnails: string[];
+  /** Bigger copies of the photos, and where each line of music is on them. */
+  photos: string[];
+  photoLines: PhotoLine[];
+  /** Which music reader read the photos. */
+  reader?: string;
   warnings: string[];
   instrument: Instrument;
   /** Bars the music reader flagged for a look. */
   flags: BarFlag[];
+  /** The music and title as they were when the editor opened (to spot unsaved changes). */
+  originalXml: string;
 }
 
-export default function ReviewScreen({ id }: { id: string }) {
+/**
+ * Check the notes after a scan, or edit a saved piece later (same tools).
+ * `?from=practice` returns to the Practice screen afterwards.
+ */
+export default function ReviewScreen({ id, query }: { id: string; query?: URLSearchParams }) {
   const { profile } = useApp();
+  const from = query?.get('from') === 'practice' ? 'practice' : 'home';
+  const [originalTitle, setOriginalTitle] = useState('');
+  const [leaving, setLeaving] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
   const [xml, setXml] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
@@ -63,13 +82,25 @@ export default function ReviewScreen({ id }: { id: string }) {
         const d = await loadDraft();
         if (cancelled) return;
         if (!d) return setMissing(true);
-        setSource({ thumbnails: d.thumbnails, warnings: d.warnings, instrument: d.instrument, flags: d.flags ?? [] });
+        setSource({ thumbnails: d.thumbnails, photos: d.photos ?? [], photoLines: d.photoLines ?? [], reader: d.reader, warnings: d.warnings, instrument: d.instrument, flags: d.flags ?? [], originalXml: d.musicxml });
         setXml(d.musicxml);
       } else {
         const p = await getPiece(id);
         if (cancelled) return;
         if (!p) return setMissing(true);
-        setSource({ pieceId: p.id, thumbnails: p.thumbnails, warnings: [], instrument: p.instrument ?? profile?.instrument ?? 'violin', flags: [] });
+        setSource({
+          piece: p,
+          thumbnails: p.thumbnails,
+          photos: p.photos ?? [],
+          photoLines: p.photoLines ?? [],
+          reader: p.reader,
+          warnings: [],
+          instrument: p.instrument ?? profile?.instrument ?? 'violin',
+          flags: [],
+          originalXml: p.musicxml,
+        });
+        setTitleText(p.title);
+        setOriginalTitle(p.title);
         setXml(p.musicxml);
       }
     })();
@@ -88,7 +119,7 @@ export default function ReviewScreen({ id }: { id: string }) {
   }, [xml]);
 
   useEffect(() => {
-    if (score && !title) setTitleText(score.title === 'Untitled' ? '' : score.title);
+    if (score && !title && !source?.piece) setTitleText(score.title === 'Untitled' ? '' : score.title);
     // Only seed the title once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [score]);
@@ -134,21 +165,53 @@ export default function ReviewScreen({ id }: { id: string }) {
     if (note.midi !== undefined) playTone(note.midi + semis);
   };
 
+  const editing = !!source?.piece;
+  const dirty = !!source && !!xml && (xml !== source.originalXml || (editing && title.trim() !== originalTitle.trim()));
+
+  // Don't lose edits to a reload or closing the tab.
+  useEffect(() => {
+    if (!editing || !dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [editing, dirty]);
+
+  /** The music as it stands, with the title in it. */
+  const currentXml = () => {
+    const doc = parseXmlDocument(xml!);
+    const finalTitle = title.trim() || score?.title || 'My music';
+    setTitle(doc, finalTitle);
+    return { finalTitle, musicxml: serialise(doc) };
+  };
+
+  const done = () => navigate(source?.piece && from === 'practice' ? `/practice/${source.piece.id}` : '/home', { replace: !!source?.piece });
+
   const save = async () => {
     if (!xml || !source || !score) return;
-    const doc = parseXmlDocument(xml);
-    const finalTitle = title.trim() || score.title || 'My music';
-    setTitle(doc, finalTitle);
+    if (source.piece && !dirty) return done();
+    const { finalTitle, musicxml } = currentXml();
     const piece = await savePiece({
-      id: source.pieceId,
+      id: source.piece?.id,
       title: finalTitle,
-      musicxml: serialise(doc),
+      musicxml,
       thumbnails: source.thumbnails,
+      photos: source.photos.length ? source.photos : undefined,
+      photoLines: source.photoLines.length ? source.photoLines : undefined,
+      reader: source.reader,
       instrument: source.instrument,
+      // Keeps the kid's scores (they're linked by id), and notes the edit in their history.
+      editedAt: source.piece ? [...(source.piece.editedAt ?? []), Date.now()] : undefined,
     });
-    if (!source.pieceId) await clearDraft();
+    if (source.piece) return done();
+    await clearDraft();
     navigate(`/practice/${piece.id}`, { replace: true });
   };
+
+  const cancel = () => (editing && dirty ? setLeaving(true) : editing ? done() : navigate('/home'));
+
+  const pagePhotos = source ? (source.photos.length ? source.photos : source.thumbnails) : [];
+  const line = note && source ? source.photoLines.find((l) => note.measureIndex >= l.from && note.measureIndex <= l.to) : undefined;
+  const barPhoto = line && source?.photos[line.page] ? { src: source.photos[line.page], top: line.top, bottom: line.bottom } : null;
 
   if (missing) {
     return (
@@ -167,15 +230,20 @@ export default function ReviewScreen({ id }: { id: string }) {
   return (
     <div className="page wide review">
       <div className="topbar">
-        <button className="btn icon-only round ghost" aria-label={t.common.back} onClick={() => navigate('/home')}>
-          <Icon name="arrow_back" />
+        <button className="btn icon-only round ghost" aria-label={editing ? t.common.cancel : t.common.back} onClick={cancel}>
+          <Icon name={editing ? 'close' : 'arrow_back'} />
         </button>
-        <h1>{t.review.title}</h1>
+        <h1>{editing ? t.review.editTitle : t.review.title}</h1>
         <button className="btn" onClick={undo} disabled={history.length === 0}>
           <Icon name="undo" /> {t.review.undo}
         </button>
       </div>
-      <p className="muted">{t.review.intro}</p>
+      <p className="muted">{editing ? t.review.editIntro : t.review.intro}</p>
+      {source.reader && (
+        <p className="muted small reader-used" data-testid="reader-used">
+          <Icon name="auto_awesome" /> {t.review.readBy(readerName(source.reader))}
+        </p>
+      )}
 
       {source.warnings.length > 0 && (
         <div className="notice warn" role="note">
@@ -246,14 +314,14 @@ export default function ReviewScreen({ id }: { id: string }) {
       </div>
 
       <div className={`review-body${showPhoto ? ' with-photo' : ''}`}>
-        {source.thumbnails.length > 0 && (
+        {pagePhotos.length > 0 && (
           <aside className="review-photo">
             <button className="btn" onClick={() => setShowPhoto((s) => !s)} aria-expanded={showPhoto}>
               <Icon name="image" /> {showPhoto ? t.review.hidePhoto : t.review.showPhoto}
             </button>
             {showPhoto && (
               <div className="photo-strip">
-                {source.thumbnails.map((src, i) => (
+                {pagePhotos.map((src, i) => (
                   <img key={i} src={src} alt={`${t.review.photo} ${i + 1}`} />
                 ))}
               </div>
@@ -281,6 +349,15 @@ export default function ReviewScreen({ id }: { id: string }) {
       </div>
 
       <section className="card edit-tools" aria-label={t.review.tapANote}>
+        {barPhoto && note && (
+          <figure className="bar-photo" data-testid="bar-photo">
+            <figcaption>
+              <strong>{t.review.photoForBar(Number(score?.measures[note.measureIndex]?.number ?? note.measureIndex + 1))}</strong>{' '}
+              <span className="muted small">{t.review.photoForBarHelp}</span>
+            </figcaption>
+            <PhotoSlice src={barPhoto.src} top={barPhoto.top} bottom={barPhoto.bottom} alt={t.review.photoForBar(Number(score?.measures[note.measureIndex]?.number ?? note.measureIndex + 1))} />
+          </figure>
+        )}
         <p className="selected-label" aria-live="polite">
           {note ? (note.isRest ? t.review.selectedRest : t.review.selected(noteName(note.midi ?? 60, fifths, true))) : t.review.tapANote}
         </p>
@@ -346,14 +423,61 @@ export default function ReviewScreen({ id }: { id: string }) {
         )}
       </section>
 
-      <div className="sticky-action">
-        {!hasNotes && <p className="notice warn">{t.review.noNotes}</p>}
-        <button className="btn primary big" style={{ width: '100%' }} onClick={save} disabled={!hasNotes} data-testid="looks-good">
-          <Icon name="check_circle" filled /> {t.review.looksGood}
+      <div className="row review-extra">
+        <button className="btn" onClick={() => xml && void downloadMusicXml(currentXml().musicxml, title.trim() || score?.title || 'My music')} disabled={!hasNotes} data-testid="download-music">
+          <Icon name="download" /> {t.review.download}
         </button>
       </div>
+
+      <div className="sticky-action">
+        {!hasNotes && <p className="notice warn">{t.review.noNotes}</p>}
+        <div className="row sticky-buttons">
+          {editing && (
+            <button className="btn big" onClick={cancel} data-testid="cancel-edit">
+              {t.common.cancel}
+            </button>
+          )}
+          <button className="btn primary big" style={{ flex: 1 }} onClick={save} disabled={!hasNotes} data-testid="looks-good">
+            <Icon name="check_circle" filled /> {editing ? t.review.saveChanges : t.review.looksGood}
+          </button>
+        </div>
+      </div>
+
+      {leaving && (
+        <ConfirmDialog
+          title={t.review.leaveTitle}
+          message={t.review.leaveMessage}
+          confirmLabel={t.review.leaveYes}
+          cancelLabel={t.review.keepEditing}
+          onCancel={() => setLeaving(false)}
+          onConfirm={done}
+        />
+      )}
     </div>
   );
+}
+
+/** One line of a photo (top and bottom as fractions of its height), cut out so it sits right by the notes. */
+function PhotoSlice({ src, top, bottom, alt }: { src: string; top: number; bottom: number; alt: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    const img = new Image();
+    img.onload = () => {
+      const y0 = Math.max(0, Math.floor(top * img.naturalHeight));
+      const h = Math.max(1, Math.min(img.naturalHeight, Math.ceil(bottom * img.naturalHeight)) - y0);
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = h;
+      c.getContext('2d')?.drawImage(img, 0, y0, img.naturalWidth, h, 0, 0, img.naturalWidth, h);
+      if (live) setUrl(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = src;
+    return () => {
+      live = false;
+    };
+  }, [src, top, bottom]);
+  return url ? <img className="photo-slice" src={url} alt={alt} /> : <div className="photo-slice placeholder" aria-busy="true" />;
 }
 
 function safeTypeOf(xml: string, i: number) {

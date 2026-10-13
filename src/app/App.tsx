@@ -12,7 +12,7 @@ const ReviewScreen = lazy(() => import('../screens/review/ReviewScreen'));
 const PracticeScreen = lazy(() => import('../screens/practice/PracticeScreen'));
 const ResultsScreen = lazy(() => import('../screens/results/ResultsScreen'));
 const ProgressScreen = lazy(() => import('../screens/progress/ProgressScreen'));
-const ParentScreen = lazy(() => import('../screens/parent/ParentScreen'));
+const SettingsScreen = lazy(() => import('../screens/settings/SettingsScreen'));
 const PrivacyScreen = lazy(() => import('../screens/privacy/PrivacyScreen'));
 const GadgetScreen = lazy(() => import('../screens/gadget/GadgetScreen'));
 
@@ -28,6 +28,10 @@ function Routes() {
   useEffect(() => {
     if (needsProfile && profiles && !profile) navigate('/', { replace: true });
   }, [needsProfile, profile, profiles]);
+  // The old name for Settings (bookmarks, installed shortcuts).
+  useEffect(() => {
+    if (pathname === '/parent') navigate('/settings', { replace: true });
+  }, [pathname]);
 
   if (needsProfile && !profile) return <div className="page" aria-busy="true" />;
 
@@ -39,15 +43,15 @@ function Routes() {
     nav = false;
   } else if (pathname === '/home') screen = <HomeScreen />;
   else if (pathname === '/add') screen = <AddMusicScreen />;
-  else if ((m = matchPath('/review/:id', path))) screen = <ReviewScreen id={m.params.id} />;
+  else if ((m = matchPath('/review/:id', path))) screen = <ReviewScreen id={m.params.id} query={m.query} />;
   else if ((m = matchPath('/practice/:id', path))) {
     screen = <PracticeScreen id={m.params.id} query={m.query} />;
     nav = false;
   } else if ((m = matchPath('/results/:id', path))) screen = <ResultsScreen id={m.params.id} />;
   else if (pathname === '/progress') screen = <ProgressScreen />;
   else if (pathname === '/gadget') screen = <GadgetScreen />;
-  else if (pathname === '/parent') {
-    screen = <ParentScreen />;
+  else if (pathname === '/settings') {
+    screen = <SettingsScreen />;
     nav = !!profile;
   } else if (pathname === '/privacy') {
     screen = <PrivacyScreen />;

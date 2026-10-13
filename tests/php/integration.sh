@@ -44,6 +44,7 @@ start_app lines gemini lines
 start_app pace gemini fast "'GEMINI_RPM' => 2,"
 start_app daily gemini daily
 start_app perminute gemini perminute
+start_app admin gemini fast "'ADMIN_PASSWORD' => 'open sesame', 'SETTINGS_FILE' => '$TMP/admin-settings.json',"
 php -S 127.0.0.1:8791 -t tests/php >/dev/null 2>&1 &
 sleep 1
 
@@ -154,13 +155,37 @@ OUT=$(step $PORT_daily line -F "$IMG")
 [ "$(last_line "$OUT" | field code)" = "quota" ] || fail "daily 429 should be 'quota': $OUT"
 echo "  ok   pace: GEMINI_RPM spaces requests (busy + retry_after); Gemini's retryDelay passed on; daily quota → quota"
 
-# --- Choosing the provider per scan, and ?info ---
-OUT=$(curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F provider=claude -F "$IMG" "http://127.0.0.1:$PORT_fast/omr.php")
-[ "$(last_line "$OUT" | field score.title)" = "Tiny tune" ] || fail "provider=claude should use Claude when its key is set: $OUT"
-INFO=$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1")
-[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] && [ "$(echo "$INFO" | field lines_per_request)" = "8" ] || fail "info: $INFO"
-! echo "$INFO" | grep -q 'AIza\|sk-ant' || fail "info leaked a key"
-echo "  ok   provider: a parent can pick Claude per scan when both keys are set; ?info lists providers (no keys)"
+# --- The site-wide music reader: only changed with the admin password ---
+last_provider() { grep '"event":"scan_start"' "$TMP/logs/$1.log" | tail -1 | field provider; }
+OUT=$(curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F provider=claude -F "$IMG" "http://127.0.0.1:$PORT_admin/omr.php")
+[ "$(last_line "$OUT" | field type)" = "result" ] && [ "$(last_provider admin)" = "gemini" ] || fail "the app must not be able to choose the provider: $OUT"
+INFO=$(curl -s "http://127.0.0.1:$PORT_admin/omr.php?info=1")
+[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field provider)" = "gemini" ] && [ "$(echo "$INFO" | field can_change)" = "1" ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] && [ "$(echo "$INFO" | field lines_per_request)" = "8" ] && [ "$(echo "$INFO" | field check_rounds)" = "2" ] || fail "info: $INFO"
+! echo "$INFO" | grep -q 'AIza\|sk-ant\|sesame' || fail "info leaked a secret"
+[ "$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1" | field can_change)" = "" ] || fail "no ADMIN_PASSWORD should mean no Change button"
+admin() { curl -s -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' "$@" "http://127.0.0.1:$PORT_admin/omr.php?admin=1"; }
+OUT=$(admin -F 'password=open sesame' -F provider=claude)
+[ "$(echo "$OUT" | tail -1)" = "200" ] && [ "$(echo "$OUT" | head -1 | field provider)" = "claude" ] || fail "admin: right password should save the choice: $OUT"
+[ "$(curl -s "http://127.0.0.1:$PORT_admin/omr.php?info=1" | field provider)" = "claude" ] || fail "info should show the saved reader"
+OUT=$(curl -s -N -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F "$IMG" "http://127.0.0.1:$PORT_admin/omr.php")
+[ "$(last_line "$OUT" | field score.title)" = "Tiny tune" ] && [ "$(last_provider admin)" = "claude" ] || fail "scans should use the saved reader: $OUT"
+[ "$(stat -c %a "$TMP/admin-settings.json")" = "600" ] || fail "settings file should be private"
+OUT=$(admin -F 'password=open sesame' -F provider=openai)
+[ "$(echo "$OUT" | tail -1)" = "400" ] || fail "admin: a reader without a key can't be chosen: $OUT"
+# Wrong passwords: 5 per IP per 15 minutes, then a lockout (even for the right one).
+for i in 1 2 3 4; do
+  OUT=$(admin -F 'password=nope' -F provider=gemini)
+  [ "$(echo "$OUT" | tail -1)" = "403" ] && [ "$(echo "$OUT" | head -1 | field attempts_left)" = "$((5 - i))" ] || fail "admin: wrong password $i: $OUT"
+done
+OUT=$(admin -F 'password=nope')
+[ "$(echo "$OUT" | tail -1)" = "429" ] && [ "$(echo "$OUT" | head -1 | field code)" = "locked" ] || fail "admin: 5th wrong password should lock: $OUT"
+OUT=$(admin -F 'password=open sesame' -F provider=gemini)
+[ "$(echo "$OUT" | tail -1)" = "429" ] && [ "$(echo "$OUT" | head -1 | field retry_after)" -gt 60 ] || fail "admin: locked out even with the right password: $OUT"
+[ "$(curl -s "http://127.0.0.1:$PORT_admin/omr.php?info=1" | field provider)" = "claude" ] || fail "a locked-out change must not be saved"
+! grep -q 'sesame' "$TMP/logs/admin.log" || fail "the admin password reached the log"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -F 'password=' "http://127.0.0.1:$PORT_fast/omr.php?admin=1")
+[ "$CODE" = "403" ] || fail "no ADMIN_PASSWORD: admin must be off, got $CODE"
+echo "  ok   music reader: the app can't choose; the admin password changes it site-wide (saved privately); 5 wrong tries lock out; no password = off"
 
 # --- Private log: useful, and never contains the key ---
 grep -q '"event":"scan_ok"' "$TMP/logs/ok.log" || fail "no scan_ok in the log"

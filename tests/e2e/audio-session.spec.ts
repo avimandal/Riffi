@@ -7,7 +7,7 @@ async function newKid(page: Page) {
   await page.getByTestId('add-kid').click();
   await page.getByLabel('Name').fill('Zoe');
   await page.getByRole('button', { name: "Let's go!" }).click();
-  await expect(page.getByRole('heading', { name: /Zoe!/ })).toBeVisible();
+  await expect(page.getByTestId('switch-player')).toContainText('Zoe!');
 }
 
 test.describe('older iPhone (no navigator.audioSession)', () => {
@@ -31,7 +31,7 @@ test.describe('older iPhone (no navigator.audioSession)', () => {
       };
     });
     await newKid(page);
-    await page.getByTestId('open-gadget').click();
+    await page.getByRole('link', { name: 'Tools' }).click();
     await page.getByTestId('metronome-start').click();
     await expect(page.getByTestId('lcd')).toContainText('BPM');
     await expect.poll(() => page.evaluate(() => (window as unknown as { riffiPlays: string[] }).riffiPlays)).toContain('ok loop=true');
@@ -58,7 +58,7 @@ test('where navigator.audioSession exists: playback, then play-and-record while 
     });
   });
   await newKid(page);
-  await page.getByTestId('open-gadget').click();
+  await page.getByRole('link', { name: 'Tools' }).click();
   await page.getByTestId('metronome-start').click();
   const types = () => page.evaluate(() => (window as unknown as { riffiTypes: string[] }).riffiTypes);
   await expect.poll(types).toEqual(['playback']);

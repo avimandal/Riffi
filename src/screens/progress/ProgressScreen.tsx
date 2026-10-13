@@ -25,6 +25,7 @@ export default function ProgressScreen() {
     return d;
   });
   const fmt = new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
+  const shortDate = new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short' });
   const daily = dailyMinutes(sessions, 14, today).map((d) => ({
     key: d.key,
     value: d.minutes,
@@ -105,6 +106,11 @@ export default function ProgressScreen() {
               <div>
                 <strong>{piece.title}</strong>
                 <div className="muted">{t.home.best(Math.max(...trend.map((x) => x.score)))}</div>
+                {piece.editedAt?.length ? (
+                  <div className="muted small edited-note">
+                    <Icon name="edit" /> {t.progress.musicEdited(shortDate.format(piece.editedAt[piece.editedAt.length - 1]))}
+                  </div>
+                ) : null}
               </div>
               <TrendLine points={trend.slice(-12).map((x) => x.score)} label={t.progress.trend(piece.title)} />
             </li>

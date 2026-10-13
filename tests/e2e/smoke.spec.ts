@@ -15,7 +15,7 @@ test('create a kid, import music, practise with the fake mic, see results saved'
   await page.getByTestId('add-kid').click();
   await page.getByLabel('Name').fill('Mia');
   await page.getByRole('button', { name: "Let's go!" }).click();
-  await expect(page.getByRole('heading', { name: /Mia!/ })).toBeVisible();
+  await expect(page.getByTestId('switch-player')).toContainText('Mia!');
 
   // Import a compressed MusicXML (.mxl) file (bypassing photo reading).
   await page.getByTestId('add-music').click();
@@ -52,6 +52,13 @@ test('create a kid, import music, practise with the fake mic, see results saved'
   await expect(page.getByRole('button', { name: 'Play again' })).toBeVisible();
   await page.getByRole('button', { name: 'Home' }).click();
   await expect(page.getByText(/Best \d+/)).toBeVisible();
+  // The … menu on the card: edit the saved music (no changes, so Cancel just goes back).
+  await page.getByTestId('piece-more').click();
+  await expect(page.getByTestId('download-music')).toBeVisible();
+  await page.getByTestId('edit-music').click();
+  await expect(page.getByRole('heading', { name: 'Edit music' })).toBeVisible();
+  await page.getByTestId('cancel-edit').click();
+  await expect(page.getByText(/Best \d+/)).toBeVisible();
   await page.getByRole('link', { name: 'My progress' }).click();
   await expect(page.getByRole('heading', { name: 'My best scores' })).toBeVisible();
   await expect(page.getByText('Twinkle Twinkle')).toBeVisible();
@@ -59,21 +66,84 @@ test('create a kid, import music, practise with the fake mic, see results saved'
   expect(errors).toEqual([]);
 });
 
-test('parent area is behind a gate', async ({ page }) => {
+test('Settings: no gate, a site-wide music reader behind the admin password, and "Are you sure?" before deleting', async ({ page }) => {
+  let saved = 'gemini';
+  let tries = 0;
+  const json = (body: unknown, status = 200) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
+  await page.route('**/api/omr.php**', async (route) => {
+    const req = route.request();
+    if (req.method() === 'GET') return route.fulfill(json({ providers: ['gemini', 'claude'], provider: saved, can_change: true, rpm: { gemini: 8, claude: 40 }, lines_per_request: 8, check_rounds: 0 }));
+    const body = req.postData() ?? '';
+    const password = body.match(/name="password"\r\n\r\n([^\r]*)/)?.[1];
+    const provider = body.match(/name="provider"\r\n\r\n([^\r]*)/)?.[1];
+    if (password !== 'open sesame') {
+      tries++;
+      return route.fulfill(tries >= 2 ? json({ code: 'locked', retry_after: 840 }, 429) : json({ code: 'wrong_password', attempts_left: 5 - tries }, 403));
+    }
+    if (provider) saved = provider;
+    return route.fulfill(json({ ok: true, provider: saved, providers: ['gemini', 'claude'] }));
+  });
+
+  // The old address still works, and there is no gate.
   await page.goto('/parent');
-  await expect(page.getByRole('heading', { name: 'Grown-ups only' })).toBeVisible();
-  await expect(page.getByRole('tablist')).toHaveCount(0);
-  const hold = page.getByTestId('parent-hold');
-  const box = (await hold.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.waitForTimeout(3300);
-  await page.mouse.up();
-  const q = await page.getByText(/What is \d+ \+ \d+\?/).textContent();
-  const [, a, b] = q!.match(/(\d+) \+ (\d+)/)!;
-  await page.getByTestId('parent-answer').fill(String(Number(a) + Number(b)));
-  await page.getByRole('button', { name: 'Check' }).click();
-  await expect(page.getByRole('tab', { name: 'Backup' })).toBeVisible();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'App' }).click();
+  await expect(page.getByTestId('reader-now')).toHaveText('Music reader: Gemini (free)');
+  await expect(page.getByText('Compare music readers')).toHaveCount(0);
+
+  // A wrong password, then a lockout with a friendly message.
+  await page.getByTestId('reader-change').click();
+  await page.getByTestId('admin-password').fill('guess');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await expect(page.getByRole('alert')).toHaveText(/That password isn't right. 4 tries left./);
+  await page.getByTestId('admin-password').fill('guess again');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await expect(page.getByRole('alert')).toHaveText(/Too many tries. Have a break and try again in 14 minutes./);
+  await expect(page.getByTestId('admin-password')).toBeDisabled();
+  await page.getByRole('button', { name: 'Close' }).click();
+
+  // The right password shows the readers with a key; choosing one saves it for the whole site.
+  tries = 0;
+  await page.getByTestId('reader-change').click();
+  await page.getByTestId('admin-password').fill('open sesame');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'Claude (paid)' }).click();
+  await expect(page.getByTestId('reader-now')).toHaveText('Music reader: Claude (paid)');
+  await expect(page.getByText('Saved. New photos are now read by Claude (paid).')).toBeVisible();
+  expect(saved).toBe('claude');
+
+  // Deleting everything asks first; "No, keep it" keeps it.
+  await page.getByRole('tab', { name: 'Backup' }).click();
+  await page.getByTestId('delete-everything').click();
+  const dialog = page.getByRole('dialog', { name: 'Are you sure?' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'No, keep it' })).toBeFocused();
+  await dialog.getByRole('button', { name: 'No, keep it' }).click();
+  await expect(dialog).toHaveCount(0);
+});
+
+test('bottom navigation and switching player from the top bar', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('add-kid').click();
+  await page.getByLabel('Name').fill('Ari');
+  await page.getByRole('button', { name: "Let's go!" }).click();
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await expect(nav.getByRole('link')).toHaveText([/Home$/, /My progress$/, /Tools$/, /Settings$/]);
+  await expect(page.getByText('Tuner & Metronome')).toHaveCount(0);
+  for (const [tab, heading] of [
+    ['Tools', 'Tuner & Metronome'],
+    ['Settings', 'Settings'],
+    ['My progress', 'My progress'],
+  ]) {
+    await nav.getByRole('link', { name: tab }).click();
+    await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
+    const sw = page.getByRole('button', { name: 'Switch player' });
+    await expect(sw).toContainText('Ari!');
+    expect((await sw.boundingBox())!.height).toBeGreaterThanOrEqual(48);
+  }
+  await page.getByRole('button', { name: 'Switch player' }).click();
+  await expect(page.getByRole('heading', { name: "Who's practising?" })).toBeVisible();
 });
 
 test('privacy page is reachable without a profile', async ({ page }) => {

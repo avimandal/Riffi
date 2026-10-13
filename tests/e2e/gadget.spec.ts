@@ -5,7 +5,7 @@ async function newKid(page: Page) {
   await page.getByTestId('add-kid').click();
   await page.getByLabel('Name').fill('Leo');
   await page.getByRole('button', { name: "Let's go!" }).click();
-  await expect(page.getByRole('heading', { name: /Leo!/ })).toBeVisible();
+  await expect(page.getByTestId('switch-player')).toContainText('Leo!');
 }
 
 test('Tuner & Metronome: metronome, counting practice, and tuner', async ({ page }) => {
@@ -14,7 +14,7 @@ test('Tuner & Metronome: metronome, counting practice, and tuner', async ({ page
   await newKid(page);
 
   // Open it from Home, no sheet music needed.
-  await page.getByTestId('open-gadget').click();
+  await page.getByRole('link', { name: 'Tools' }).click();
   await expect(page.getByRole('heading', { name: 'Tuner & Metronome' })).toBeVisible();
   const lcd = page.getByTestId('lcd');
   await expect(lcd).toContainText('METRONOME');
