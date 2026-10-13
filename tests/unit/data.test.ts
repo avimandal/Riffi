@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '../../src/data/db';
 import { BackupError, exportBackup, importBackup, validateBackup } from '../../src/data/backup';
-import { createProfile, deleteProfile, recordSession, savePiece, sessionsFor } from '../../src/data/repo';
+import { bestFor, createProfile, deleteProfile, recordSession, savePiece, sessionsFor } from '../../src/data/repo';
 import {
   activePlayingMs,
   bestStreak,
@@ -106,6 +106,19 @@ describe('storage and backup', () => {
     expect(second.personalBest).toBe(true);
     expect(second.newBadges).not.toContain('firstSong');
     expect(await sessionsFor(kid.id)).toHaveLength(2);
+  });
+
+  it('editing a saved piece keeps its scores and notes the edit', async () => {
+    const kid = await createProfile({ name: 'Zoe', avatar: 'owl', instrument: 'violin', difficulty: 'normal', weeklyGoalMinutes: 60 });
+    const piece = await savePiece({ title: 'Minuet', musicxml: '<score-partwise/>', thumbnails: [], photos: ['data:image/jpeg;base64,AA'], reader: 'gemini' });
+    const base = { profileId: kid.id, pieceId: piece.id, pieceTitle: piece.title, instrument: 'violin' as const, mode: 'playalong' as const, difficulty: 'normal' as const, tempoBpm: 80, activeMs: 60_000, durationMs: 70_000, bars: [], marks: [] };
+    await recordSession({ ...base, startedAt: Date.now() - 1000, score: 64, completion: 1 });
+    const edited = await savePiece({ ...piece, musicxml: '<score-partwise version="4.0"/>', editedAt: [Date.now()] });
+    expect(edited.id).toBe(piece.id);
+    expect(edited.createdAt).toBe(piece.createdAt);
+    expect(edited.photos).toEqual(piece.photos);
+    expect(edited.editedAt).toHaveLength(1);
+    expect(await bestFor(kid.id, piece.id)).toBe(64);
   });
 
   it('exports and re-imports everything', async () => {

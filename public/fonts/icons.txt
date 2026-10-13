@@ -19,9 +19,9 @@ delete
 delete_forever
 download
 edit
+expand_more
 favorite
 graphic_eq
-group
 hearing
 home
 image
@@ -38,12 +38,10 @@ menu
 mic
 military_tech
 more_horiz
-more_vert
 music_note
 pause
 person_remove
 photo_camera
-photo_library
 piano
 play_arrow
 play_circle
@@ -54,6 +52,7 @@ repeat
 replay
 rotate_right
 school
+settings
 shield_person
 star
 stop

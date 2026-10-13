@@ -23,8 +23,8 @@ export function ProfilesScreen() {
         <span className="brand" aria-hidden>
           <Icon name="music_note" filled /> {t.appName}
         </span>
-        <Link to="/parent" className="btn ghost">
-          <Icon name="shield_person" /> {t.nav.parents}
+        <Link to="/settings" className="btn ghost">
+          <Icon name="settings" /> {t.nav.settings}
         </Link>
       </div>
       <h1 style={{ textAlign: 'center' }}>{t.profiles.title}</h1>

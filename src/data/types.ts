@@ -21,8 +21,27 @@ export interface Piece {
   thumbnails: string[];
   /** Instrument it was scanned for. */
   instrument?: Instrument;
+  /** The original photos (larger than the thumbnails), to check the notes against when editing. Device only. */
+  photos?: string[];
+  /** Where each line of music sits on the photos, and which bars came from it. */
+  photoLines?: PhotoLine[];
+  /** Which music reader read the photos ('gemini' or 'claude'). */
+  reader?: string;
+  /** When the music was changed after it was first saved. */
+  editedAt?: number[];
   createdAt: number;
   updatedAt: number;
+}
+
+/** One line of music on a photo, and the bars (measure indexes) read from it. */
+export interface PhotoLine {
+  /** 0-based photo. */
+  page: number;
+  /** Fractions of the photo's height. */
+  top: number;
+  bottom: number;
+  from: number;
+  to: number;
 }
 
 export interface StoredBar {
@@ -98,8 +117,6 @@ export interface DeviceSettings {
   pianoMode: 'auto' | 'live' | 'playThenScore';
   theme: 'system' | 'light' | 'dark';
   firstRunDone: boolean;
-  /** Which AI reads sheet music ('' = the server's default). Only offered when the server has more than one. */
-  readerProvider?: string;
 }
 
 export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {

@@ -78,8 +78,8 @@ public/              .htaccess (SPA fallback, MIME types, cache headers), app-ic
                      models/basic-pitch/ is copied from node_modules on install (not committed)
 src/
   app/               App shell, router, state, theme and styles
-  screens/           One folder per screen (profiles, home, add, review, practice, results, progress, parent, privacy)
-  components/        Buttons, avatar, meter, stars, confetti, sheet view, charts, parent gate…
+  screens/           One folder per screen (profiles, home, add, review, practice, results, progress, gadget, settings, privacy)
+  components/        Buttons, avatar, meter, stars, confetti, sheet view, charts, confirm dialog, piece menu…
   audio/             Mic capture (AudioWorklet), metronome scheduler, clicks, latency calibration, DSP
   engines/           mono/ (pitchy) and piano/ (Basic Pitch in a Web Worker), shared NoteEvent type
   sheet/             MusicXML parsing, expected notes, repeats, OSMD wrapper, tap-to-fix editor, OMR client
@@ -116,7 +116,7 @@ What's covered (SPEC §15):
 - **Scoring and follower** against synthetic `NoteEvent` streams: perfect run, a skipped note, extra notes, late notes, a player who slows down, octave-off singing, partial piano chords, wrong notes landing on the right bars, issues and positives.
 - **Engine fixtures:** generated audio (harmonic tones with vibrato, sung-like glides, repeated notes, piano-like chords, with and without metronome clicks mixed in) is run through the real mono engine and the real Basic Pitch model. The acceptance checks from SPEC §17 that can be automated run here too: a correct performance with vibrato and clicks scores 90+, clicks alone produce no notes, wrong notes are flagged on the right bars, and singing an octave low scores normally.
 - **MusicXML:** fixtures with repeats and voltas, ties, two piano staves with chords, key and time changes, and a pickup bar; `.mxl` unzipping.
-- **E2E:** create a profile, import a compressed `.mxl` fixture (bypassing OMR), tap-fix a note, practise with a fake microphone stream, see the results saved on Home and My progress. Plus the parent gate and the privacy page.
+- **E2E:** create a profile, import a compressed `.mxl` fixture (bypassing OMR), tap-fix a note, practise with a fake microphone stream, see the results saved on Home and My progress. Plus Settings (no gate, the password-protected music reader choice, "Are you sure?" before deleting), the bottom tabs and player switcher, editing a saved piece against its photo, downloading it as MusicXML and opening it again, and the privacy page.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, lint, unit tests, build, the PHP tests and the Playwright test on every push and pull request.
 
@@ -200,10 +200,15 @@ Copy `api/config.sample.php`, choose the AI provider and fill in its key, and ch
 | `TRUST_PROXY` | `false` | Set `true` behind Cloudflare so the limit counts each visitor, not Cloudflare |
 | `REQUEST_SECONDS` | 85 | Deadline for one page. Keep it under Cloudflare's 100 s |
 | `LOG_FILE` | `null` | Private error log; `null` = `riffi-logs/omr.log` next to the web root, `false` = off |
-| `DIAGNOSTICS` | `true` | Allows **Parents → Settings → Check music reader** |
+| `DIAGNOSTICS` | `true` | Allows **Settings → App → Check music reader** |
+| `ADMIN_PASSWORD` | `''` | Lets a grown-up change the music reader for the whole site in **Settings → App → Music reader → Change**. The server checks it (constant-time) and allows 5 wrong tries per IP per 15 minutes. Empty = no Change button, `PROVIDER` is always used. Use a long passphrase |
+| `CHECK_ROUNDS` | 2 | Double-check rounds per line (0 = off, 1 or 2). Each round costs one more request per batch of lines, so 0 saves the most |
+| `SETTINGS_FILE` | `null` | Where the site-wide music reader choice is saved; `null` = `riffi-settings.json` next to the private log, outside the web root |
 | `LINES_PER_REQUEST` | 8 | Lines of music per request (each still its own picture). Gemini's free tier allows ~20 requests a day per model, so the default reads a page in ~3–4 requests; `1` = strictly one line at a time (paid keys) |
 | `GEMINI_THINKING` | `low` | Gemini thinking level for reading and double-checking (`medium` can take a minute per request) |
 | `GEMINI_THINKING_OVERVIEW` | `low` | Thinking level for the quick look at the whole page |
+
+**Choosing the music reader.** Every scan uses the same reader, for everyone: the one chosen in **Settings → App → Music reader** (saved on the server, in `riffi-settings.json` next to the log), or `PROVIDER` if nothing was chosen. Everyone sees which reader is in use; only someone with `ADMIN_PASSWORD` can change it, and only to a reader whose key is in the config. The app never sends a choice itself.
 
 Both providers get the same prompt, the same validation and the same single retry. If Gemini's free tier runs out of quota (HTTP 429) or either provider is overloaded, kids see "Riffi's music reader is busy, try again in a minute." The free tier has per-minute and per-day request limits, so a busy household may occasionally hit them; switching `PROVIDER` to `claude` (paid) avoids that.
 
@@ -233,7 +238,7 @@ The rate limiter writes tiny counter files to the system temp folder by default.
 
 ### Checking and troubleshooting sheet reading
 
-**Parents → Settings → Check music reader** asks the server for a report (it never shows keys):
+**Settings → App → Check music reader** asks the server for a report (it never shows keys):
 
 - whether the config was found and which provider and model it uses;
 - whether the model name exists for your key (catches a wrong `GEMINI_MODEL` or a bad key);
@@ -259,7 +264,7 @@ The **private log** is `riffi-logs/omr.log` in the folder *above* the web root (
 
 ### 5. First run on each device
 
-Open https://riffi.avimandal.com, add a kid, add some music, and press **Start**. The first time, Riffi offers a **10-second sound check**: it measures the room's noise and plays a few clicks to measure the device's audio latency. Do it with the volume up and headphones off. You can redo it any time in **Parents → Settings → Timing check**. Then install it to the home screen (Chrome/Edge/Android: the Install button on Home; iPad/iPhone: Share → Add to Home Screen).
+Open https://riffi.avimandal.com, add a kid, add some music, and press **Start**. The first time, Riffi offers a **10-second sound check**: it measures the room's noise and plays a few clicks to measure the device's audio latency. Do it with the volume up and headphones off. You can redo it any time in **Settings → App → Timing check**. Then install it to the home screen (Chrome/Edge/Android: the Install button on Home; iPad/iPhone: Share → Add to Home Screen).
 
 ### 6. Cloudflare
 
@@ -321,7 +326,7 @@ If a correct performance scores below 90, look at timing first (calibrate latenc
 - **Violin and voice:** `MONO_ENGINE` in `src/engines/mono/monoEngine.ts`. Clarity threshold (0.9), noise gate (room noise × 3), median filter (5 frames), note change (60 cents held for 60 ms), silence gap (50 ms), glide folding, same-pitch re-attack, and the ±35 ms click mask.
 - **Piano:** `PIANO_ENGINE` in `src/engines/piano/config.ts`. Basic Pitch thresholds, shortest note, highest accepted note (C7, to keep clicks out), click suppression, live step size and the "can't keep up" budget that switches a device to play-then-score.
 
-### Per-device settings (Parents → Settings)
+### Per-device settings (Settings → App)
 
 Latency (measured or set by hand), metronome sound/visual/vibrate and volume, piano listening mode (automatic, live, or play then score), and theme.
 
@@ -349,16 +354,18 @@ Metronome (Web Audio lookahead scheduler) → click times                       
   - **Pacing:** the app paces itself (`GEMINI_RPM` per minute, told to it by `?info`) and the server keeps a shared per-minute count too. When the AI says it's busy (HTTP 429), the app waits as long as Gemini's `retryDelay` asks (counting down on screen) and tries again. If the free tier's *daily* quota is used up, it says so instead.
   - **Notation:** the AI answers in *Riffi Notation*, a compact JSON format (one string of tokens per bar, e.g. `"D5e. E5s 3( F#5e G5e A5e ) B5q"`); the browser builds the MusicXML itself (`src/sheet/notation.ts`).
   - **Streaming:** each request streams (keep-alive pings, "bars so far" progress, then the result or a categorised error with a reference code), with a hard deadline (`REQUEST_SECONDS`).
-  - **Providers:** **Google Gemini** (the default) or **Anthropic Claude**, behind one interface. If the server has keys for both, **Parents → Settings → Check music reader → Compare music readers** chooses which reads the next scans on that device. With Claude, the request opts in to the API's server-side refusal fallback (`fallbacks: "default"`); set `USE_FALLBACKS` to `false` to turn that off.
+  - **Providers:** **Google Gemini** (the default) or **Anthropic Claude**, behind one interface. If the server has keys for both, **Settings → App → Music reader → Change** (with `ADMIN_PASSWORD`) chooses which one reads every scan on the site. With Claude, the request opts in to the API's server-side refusal fallback (`fallbacks: "default"`); set `USE_FALLBACKS` to `false` to turn that off.
   - Nothing is stored on the server except the private error log (no images, no music). You can also open MusicXML files directly (`.mxl` zipped files are unpacked in the browser).
   - **Instrument:** adding and practising default to the current kid's main instrument.
 - **Review:** the music is drawn with OpenSheetMusicDisplay next to the photo thumbnails. Tap a note (or use the arrow keys) to move it up or down, change its length, turn it into a rest, delete it, or add a note or rest after it. You can also change the key, time signature and title. "Looks good!" saves it.
+- **Editing later and downloading:** every saved piece has a … menu (on its card on Home, and in the Practice screen's header) with **Edit music** and **Download music file**. Edit music opens the same editor. Pieces read from photos keep a 1600 px copy of each photo (on the device only) and where each line of music sits on it, so selecting a note shows the line of the photo that bar came from, right by the editing tools (the whole page is under "Show photo"). The editor also says which music reader read it. "Save changes" keeps the piece's id, so the kid's scores and history stay, and adds "Music edited" (with the date) to My progress; past results drawn on the old version no longer colour the notes. "Cancel" asks first if anything changed. Downloads are `.musicxml` files named after the title (e.g. `Hermans-hornpipe.musicxml`); on iPhone and iPad they go through the share sheet (Save to Files), elsewhere they download. They open again through Add music → Open a music file.
+- **Navigation:** bottom tabs Home, My progress, Tools (the Tuner & Metronome) and Settings. The avatar and greeting at the top of each of those is the **Switch player** button. Settings has no gate; deleting a kid, restoring a backup and deleting everything each ask "Are you sure?" first.
 - **Metronome:** clicks are scheduled on the audio clock with a lookahead (the timer only wakes the scheduler). There's a one-bar count-in, an accent on beat 1, a short high woodblock click (mostly above 4 kHz), and a big bouncing dot that always shows.
 - **iPhone silent switch and loudspeaker** (`src/audio/session.ts`): Safari normally mutes web audio when the ringer switch is on silent. Where Safari has the Audio Session API (iOS 16.4+/17), Riffi sets `navigator.audioSession.type` to `playback` when sound starts, and to `play-and-record` just before the mic opens (that also plays through the switch, and keeps output on the loudspeaker rather than the earpiece). It goes back to `playback` when the mic closes. On older iOS it plays a silent looping `<audio>` element from the same tap instead, re-kicks it after the mic opens, and pauses it when the app is hidden so it doesn't linger in Now Playing. This covers the practice metronome, the Tuner & Metronome (clicks, reference tone, chime) and the note preview on the review screen. Android and desktop are left alone.
 - **Ignoring the metronome**, in layers: exact click times are known, so analysis frames within ±35 ms of a click can't start or end notes; the mono engine band-limits to 60 Hz–3.5 kHz and drops pitches outside the instrument's range; the mic uses echo cancellation but no noise suppression or auto gain; and the app suggests headphones.
 - **Mono engine:** `pitchy` (McLeod) with a 2048 window and 256 hop, clarity ≥ 0.9, a calibrated noise gate, and a 5-frame median. Notes are segmented by pitch, not volume, and each note's pitch is the median over its body, so vibrato isn't a mistake.
 - **Piano engine:** Spotify's Basic Pitch model in a Web Worker, loaded only when piano is chosen. A streaming version keeps only the frames inside each 2 s window's context, so live output arrives well under a second behind. If the device can't keep up, it switches to **play then score**: it records in memory, analyses at the end with a progress bar, then deletes the recording.
-- **Tuner & Metronome** (`/gadget`, from Home): a standalone handheld-style device that needs no sheet music.
+- **Tuner & Metronome** (`/gadget`, the Tools tab): a standalone handheld-style device that needs no sheet music.
   - **Metronome:** 30–250 BPM with hold-to-repeat, tap tempo, seven time signatures, five sounds (woodblock, click, beep, cowbell, soft), accent, subdivisions, a 5/10/15-minute practice timer with a chime (and vibration where supported), and per-kid presets.
   - **Shared scheduler:** it runs on the same lookahead scheduler as the practice metronome (`src/audio/scheduler.ts`), and settings apply live from the next click.
   - **Tuner:** reuses the mono pitch engine, with Violin (G D A E string buttons), Voice and Piano/chromatic presets, A = 438–445 Hz, and a reference tone to tune by ear.
@@ -382,7 +389,7 @@ Metronome (Web Audio lookahead scheduler) → click times                       
 - Sheet reading is tested in CI against fake Gemini and Claude APIs and by replaying recorded real runs (see *Sheet-reading accuracy* under Tests); CI itself has no API keys.
 - **Gemini's free tier allows about 20 requests a day per model** (and the busiest models are sometimes overloaded). A page takes about 3–4 requests, so roughly five pages a day. For more, use a paid key (then `LINES_PER_REQUEST => 1` is an option) or `PROVIDER => 'claude'`.
 - Engine and scoring tests use synthetic audio. Real instruments, rooms and microphones vary, so the real-world acceptance checks in SPEC §17 (a phone's speaker at normal volume, a mid-range tablet with two-hand piano, installing on an iPad) still need doing on real devices.
-- Data is stored on one device only. Use **Parents → Backup** to move it. Clearing the browser's site data deletes it.
+- Data is stored on one device only. Use **Settings → Backup** to move it. Clearing the browser's site data deletes it.
 
 ---
 

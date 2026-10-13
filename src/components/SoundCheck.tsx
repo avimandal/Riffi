@@ -26,25 +26,25 @@ export function SoundCheck({ onDone, compact }: { onDone?: () => void; compact?:
       if (est.ok) changes.latencyMs = est.latencyMs;
       await updateSettings(changes);
       const db = Math.round(20 * Math.log10(Math.max(1e-6, floor)));
-      setMessage(est.ok ? `${t.parent.micCheckDone(db)} ${t.parent.latencyResult(est.latencyMs)}` : `${t.parent.micCheckDone(db)} ${t.parent.latencyFailed}`);
+      setMessage(est.ok ? `${t.settings.micCheckDone(db)} ${t.settings.latencyResult(est.latencyMs)}` : `${t.settings.micCheckDone(db)} ${t.settings.latencyFailed}`);
       setStep(est.ok ? 'done' : 'failed');
       if (est.ok) onDone?.();
     } catch (e) {
       setStep('failed');
-      setMessage(e instanceof MicError && e.reason === 'denied' ? t.practice.micDenied : t.parent.latencyFailed);
+      setMessage(e instanceof MicError && e.reason === 'denied' ? t.practice.micDenied : t.settings.latencyFailed);
     }
   };
 
   const running = step === 'noise' || step === 'latency';
   return (
     <div className="stack">
-      {!compact && <p className="muted">{t.parent.latencyHelp}</p>}
+      {!compact && <p className="muted">{t.settings.latencyHelp}</p>}
       <p className="muted" aria-live="polite">
-        {settings.latencyMs !== undefined ? t.parent.latencyCurrent(settings.latencyMs) : t.parent.latencyNotSet}
+        {settings.latencyMs !== undefined ? t.settings.latencyCurrent(settings.latencyMs) : t.settings.latencyNotSet}
       </p>
       <button className="btn primary big" onClick={run} disabled={running} data-testid="sound-check">
         <Icon name={running ? 'graphic_eq' : 'tune'} filled={running} />
-        {step === 'noise' ? t.parent.micCheckQuiet : step === 'latency' ? t.parent.latencyRunning : t.parent.latencyStart}
+        {step === 'noise' ? t.settings.micCheckQuiet : step === 'latency' ? t.settings.latencyRunning : t.settings.latencyStart}
       </button>
       {message && (
         <p className={`notice ${step === 'done' ? 'good' : 'warn'}`} role="status">

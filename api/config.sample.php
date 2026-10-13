@@ -53,9 +53,21 @@ return [
     // Private error log (never contains your API keys). null = a riffi-logs folder next to
     // the web root, e.g. /home/you/riffi-logs/omr.log; set a full path to choose; false = off.
     'LOG_FILE' => null,
-    // Parents -> Settings -> Check music reader. Shows limits and whether the AI answers;
+    // Settings -> App -> Check music reader. Shows limits and whether the AI answers;
     // never shows keys. Set false to turn the check off.
     'DIAGNOSTICS' => true,
+
+    // Password for Settings -> App -> Music reader -> Change, which switches the music
+    // reader (Gemini or Claude) for everyone on the site. Use a long passphrase. The server
+    // allows 5 wrong tries per IP per 15 minutes. '' = no Change button; PROVIDER is used.
+    'ADMIN_PASSWORD' => '',
+    // Where that choice is saved. null = riffi-settings.json next to the private log
+    // (outside the web root).
+    'SETTINGS_FILE' => null,
+
+    // Double-check rounds per line of music: the AI compares an engraving of what it read
+    // with the photo and fixes mismatches. 0 = off (fewest requests), 1 or 2.
+    'CHECK_ROUNDS' => 2,
 
     // Advanced.
     // Lines of music per request. Each line is still its own full-resolution picture.

@@ -12,7 +12,6 @@ export async function readSheetMusic(
   drafts: PageDraft[],
   instrument: Instrument,
   onProgress?: (p: SheetProgress) => void,
-  opts: { provider?: string } = {},
 ): Promise<ReadResult & { pages: PreparedPage[] }> {
   const pages: PreparedPage[] = [];
   for (let i = 0; i < drafts.length; i++) {
@@ -20,13 +19,13 @@ export async function readSheetMusic(
     pages.push(await preparePage(drafts[i], instrument));
   }
   const info = await readerInfo();
-  const provider = opts.provider && info?.providers.includes(opts.provider) ? opts.provider : undefined;
-  const rpm = info?.rpm[provider ?? info.default ?? 'gemini'] ?? 8;
+  // The server decides which AI reads (site-wide, in Settings); the app only paces itself for it.
+  const rpm = info?.rpm[info.provider ?? 'gemini'] ?? 8;
   const result = await readPrepared(pages, {
     instrument,
-    provider,
     rpm,
     linesPerRequest: info?.linesPerRequest ?? 8,
+    checkRounds: info?.checkRounds ?? 2,
     onProgress,
     render: (measures, ctx) => renderLinePng(measures, ctx, instrument),
   });

@@ -8,6 +8,7 @@ import { Icon } from '../../components/Icon';
 import { INSTRUMENT_ICON } from '../../components/instrumentIcons';
 import { Meter } from '../../components/Meter';
 import { Modal } from '../../components/Modal';
+import { PieceMenu } from '../../components/PieceMenu';
 import { PulseDot } from '../../components/PulseDot';
 import { SheetView, type SheetHandle } from '../../components/SheetView';
 import { SoundCheck } from '../../components/SoundCheck';
@@ -43,6 +44,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
   const [analysePct, setAnalysePct] = useState(0);
   const [learnPos, setLearnPos] = useState(0);
   const [showInstrument, setShowInstrument] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const [showFirstRun, setShowFirstRun] = useState(false);
   const [level, setLevel] = useState(0);
   const sheet = useRef<SheetHandle>(null);
@@ -277,6 +279,9 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
           <button className="btn icon-only round ghost" aria-label={t.practice.zoomIn} onClick={() => setZoom((z) => Math.min(2, z + 0.15))}>
             <Icon name="zoom_in" />
           </button>
+          <button className="btn icon-only round ghost" aria-label={t.home.moreFor(piece.title)} onClick={() => setShowMenu(true)} disabled={active || busy} data-testid="practice-more">
+            <Icon name="more_horiz" />
+          </button>
         </div>
       </header>
 
@@ -441,6 +446,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
         </aside>
       </div>
 
+      {showMenu && <PieceMenu piece={piece} from="practice" onClose={() => setShowMenu(false)} />}
       {showInstrument && (
         <Modal title={t.practice.changeInstrument} onClose={() => setShowInstrument(false)}>
           <div className="stack">

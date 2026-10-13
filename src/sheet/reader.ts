@@ -104,6 +104,8 @@ export interface ReadResult {
   musicxml: string;
   warnings: string[];
   flags: BarFlag[];
+  /** Which bars (indexes into the measure list) came from each line of each photo, for side-by-side checking. */
+  lineBars: { page: number; line: number; from: number; to: number }[];
   trace: { overview: Overview[]; lines: LineTrace[]; provider?: string };
 }
 
@@ -114,7 +116,6 @@ export type LineRenderer = (measures: RnMeasure[], ctx: { key?: number; time?: s
 
 export interface ReadOptions {
   instrument: Instrument;
-  provider?: string;
   onProgress?: (p: ReadProgress) => void;
   /** Double-check rounds per line (0 = off). */
   checkRounds?: number;
@@ -206,7 +207,7 @@ const chunks = <T>(xs: T[], n: number): T[][] => {
 export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Promise<ReadResult> {
   const instrument = opts.instrument;
   const staves: 1 | 2 = instrument === 'piano' ? 2 : 1;
-  const send: Sender = opts.send ?? ((req, onBars) => callReader(req, { instrument, provider: opts.provider, onBars }));
+  const send: Sender = opts.send ?? ((req, onBars) => callReader(req, { instrument, onBars }));
   const pacer = opts.pacer ?? new RequestPacer({ rpm: opts.rpm ?? 8, maxWaitMs: 20 * 60_000 });
   const rounds = Math.max(0, Math.min(2, opts.checkRounds ?? 2));
   const per = Math.max(1, Math.min(12, opts.linesPerRequest ?? 8));
@@ -414,8 +415,10 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
   const ov0 = overviews.find((o) => o.title || o.composer || o.tempo) ?? overviews[0] ?? {};
   const entries: { m: RnMeasure; unsure: boolean; problems: BarProblem[] }[] = [];
   let n = 1;
+  const lineBars: ReadResult['lineBars'] = [];
   for (const st of all) {
     st.trace.final = st.measures;
+    if (st.measures.length) lineBars.push({ page: st.trace.page, line: st.trace.line, from: entries.length, to: entries.length + st.measures.length - 1 });
     for (const m of st.measures) {
       const local = Number(m.n);
       const renumbered = m.pickup ? { ...m, n: 0 } : { ...m, n: n++ };
@@ -453,5 +456,5 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     if (e instanceof NotationError) throw new OmrError('unreadable', undefined, 'bad_notation');
     throw e;
   }
-  return { score, musicxml: converted.musicxml, warnings: score.warnings ?? [], flags, trace: { overview: overviews, lines: all.map((st) => st.trace), provider } };
+  return { score, musicxml: converted.musicxml, warnings: score.warnings ?? [], flags, lineBars, trace: { overview: overviews, lines: all.map((st) => st.trace), provider } };
 }

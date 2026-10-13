@@ -92,7 +92,9 @@ export default function ResultsScreen({ id }: { id: string }) {
       return null;
     }
   }, [piece]);
-  const marks = useMemo(() => (session ? marksToMap(session.marks) : new Map<number, NoteMark>()), [session]);
+  // Marks point at notes by position, so they only fit the music as it was played.
+  const editedSince = !!session && !!piece?.editedAt?.some((at) => at > session.startedAt);
+  const marks = useMemo(() => (session && !editedSince ? marksToMap(session.marks) : new Map<number, NoteMark>()), [session, editedSince]);
 
   if (session === null) {
     return (
@@ -212,6 +214,7 @@ export default function ResultsScreen({ id }: { id: string }) {
 
       {piece && score && (
         <section>
+          {editedSince && <p className="muted">{t.results.editedSince}</p>}
           <SheetView xml={piece.musicxml} score={score} marks={marks} label={t.practice.sheetLabel} style={{ maxHeight: '60vh' }} />
           <ul className="legend" aria-label={t.results.legendTitle}>
             <li>

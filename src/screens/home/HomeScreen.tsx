@@ -3,22 +3,13 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { t } from '../../i18n';
 import { useApp } from '../../app/state';
 import { Link, navigate } from '../../app/router';
-import { Avatar } from '../../components/Avatar';
 import { GoalRing } from '../../components/GoalRing';
 import { Icon } from '../../components/Icon';
 import { InstallPrompt } from '../../components/InstallPrompt';
-import { Modal } from '../../components/Modal';
+import { PieceMenu } from '../../components/PieceMenu';
 import { db } from '../../data/db';
-import { deletePiece } from '../../data/repo';
 import { bestScore, currentStreak, weekMinutes } from '../../data/stats';
 import type { Piece } from '../../data/types';
-
-function greeting(name: string, now = new Date()) {
-  const h = now.getHours();
-  if (h < 11) return t.home.greetingMorning(name);
-  if (h >= 18) return t.home.greetingEvening(name);
-  return t.home.greeting(name);
-}
 
 export function HomeScreen() {
   const { profile } = useApp();
@@ -35,12 +26,7 @@ export function HomeScreen() {
 
   return (
     <div className="page home">
-      <header className="spread home-head">
-        <div className="row">
-          <Avatar id={profile.avatar} size={64} />
-          <h1 style={{ margin: 0 }}>{greeting(profile.name)}</h1>
-        </div>
-      </header>
+      <h1 className="sr-only">{t.nav.home}</h1>
 
       <InstallPrompt />
 
@@ -57,19 +43,6 @@ export function HomeScreen() {
           <div className="muted">{minutes >= goal ? t.home.weekGoalDone : t.home.weekGoal(minutes, goal)}</div>
         </div>
       </section>
-
-      <Link to="/gadget" className="card gadget-card" data-testid="open-gadget">
-        <span className="gadget-card-icon" aria-hidden>
-          <Icon name="av_timer" size={40} />
-        </span>
-        <span>
-          <strong>{t.gadget.homeCard}</strong>
-          <span className="muted small" style={{ display: 'block' }}>
-            {t.gadget.homeCardHelp}
-          </span>
-        </span>
-        <Icon name="arrow_forward" />
-      </Link>
 
       {lastPiece && (
         <section className="card keep-going">
@@ -108,8 +81,8 @@ export function HomeScreen() {
                   <span className="piece-title">{p.title}</span>
                   <span className="chip">{best !== undefined ? t.home.best(best) : t.home.notPlayedYet}</span>
                 </button>
-                <button className="btn icon-only round ghost piece-more" aria-label={`${t.common.edit}: ${p.title}`} onClick={() => setMenuFor(p)}>
-                  <Icon name="more_vert" />
+                <button className="btn icon-only round ghost piece-more" aria-label={t.home.moreFor(p.title)} onClick={() => setMenuFor(p)} data-testid="piece-more">
+                  <Icon name="more_horiz" />
                 </button>
               </li>
             );
@@ -117,29 +90,7 @@ export function HomeScreen() {
         </ul>
       </section>
 
-      {menuFor && (
-        <Modal title={menuFor.title} onClose={() => setMenuFor(null)}>
-          <div className="stack">
-            <button className="btn primary big" onClick={() => navigate(`/practice/${menuFor.id}`)}>
-              <Icon name="play_arrow" filled /> {t.home.practise}
-            </button>
-            <button className="btn big" onClick={() => navigate(`/review/${menuFor.id}`)}>
-              <Icon name="edit" /> {t.home.editPiece}
-            </button>
-            <button
-              className="btn danger"
-              onClick={async () => {
-                if (window.confirm(t.home.confirmDelete(menuFor.title))) {
-                  await deletePiece(menuFor.id);
-                  setMenuFor(null);
-                }
-              }}
-            >
-              <Icon name="delete" /> {t.home.deletePiece}
-            </button>
-          </div>
-        </Modal>
-      )}
+      {menuFor && <PieceMenu piece={menuFor} from="home" onClose={() => setMenuFor(null)} />}
     </div>
   );
 }

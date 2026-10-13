@@ -106,8 +106,17 @@ function riffi_default_config(): array
         // Private log of failures (no keys, no images). null = a riffi-logs folder
         // next to (outside) the web root, falling back to the system temp folder. false = off.
         'LOG_FILE' => null,
-        // Allow GET ?check=1 (the "Check music reader" button in the Parent area).
+        // Allow GET ?check=1 (the "Check music reader" button in Settings).
         'DIAGNOSTICS' => true,
+        // Password for changing the music reader for the whole site (Settings → Music
+        // reader → Change). '' = no Change button; PROVIDER is always used.
+        'ADMIN_PASSWORD' => '',
+        // Double-check rounds per line of music (0 = off, 1 or 2). Each round is one more
+        // request per batch of lines, so 0 saves the most.
+        'CHECK_ROUNDS' => 2,
+        // The site-wide music reader choice. null = riffi-settings.json next to the
+        // private log (outside the web root).
+        'SETTINGS_FILE' => null,
         // Only change these for testing against a mock server.
         'GEMINI_API_URL' => RIFFI_GEMINI_URL,
         'CLAUDE_API_URL' => RIFFI_ANTHROPIC_URL,
@@ -165,7 +174,7 @@ final class RiffiLog
     public static function init(array $cfg): void
     {
         self::$ref = bin2hex(random_bytes(3));
-        self::$secrets = array_values(array_filter([(string) $cfg['GEMINI_API_KEY'], (string) $cfg['ANTHROPIC_API_KEY']], fn ($k) => strlen($k) >= 8));
+        self::$secrets = array_values(array_filter([(string) $cfg['GEMINI_API_KEY'], (string) $cfg['ANTHROPIC_API_KEY'], (string) ($cfg['ADMIN_PASSWORD'] ?? '')], fn ($k) => strlen($k) >= 4));
         if ($cfg['LOG_FILE'] === false) {
             self::$file = null;
             return;
@@ -1303,17 +1312,65 @@ function riffi_configured_providers(array $cfg): array
     return $have;
 }
 
-/**
- * Pick the provider: the config's PROVIDER ('gemini' by default), or the one the
- * app asked for (a parent setting for comparing) if that one has a key.
- */
-function riffi_provider(array $cfg, string $choice = ''): RiffiProvider
+/** Display names, as shown in Settings. */
+const RIFFI_PROVIDER_NAMES = ['gemini' => 'Gemini (free)', 'claude' => 'Claude (paid)'];
+
+/** The private settings file (the site-wide music reader choice), outside the web root. */
+function riffi_settings_path(array $cfg): string
 {
-    $name = strtolower((string) $cfg['PROVIDER']);
-    $choice = strtolower($choice);
-    if ($choice !== '' && in_array($choice, riffi_configured_providers($cfg), true)) {
-        $name = $choice;
+    if (is_string($cfg['SETTINGS_FILE']) && $cfg['SETTINGS_FILE'] !== '') {
+        return $cfg['SETTINGS_FILE'];
     }
+    if (is_string($cfg['LOG_FILE']) && $cfg['LOG_FILE'] !== '') {
+        return dirname($cfg['LOG_FILE']) . '/riffi-settings.json';
+    }
+    if (!empty($_SERVER['DOCUMENT_ROOT'])) {
+        $dir = dirname((string) $_SERVER['DOCUMENT_ROOT']) . '/riffi-logs';
+        if ((is_dir($dir) || @mkdir($dir, 0700, true)) && is_writable($dir)) {
+            return $dir . '/riffi-settings.json';
+        }
+    }
+    return sys_get_temp_dir() . '/riffi-logs/riffi-settings.json';
+}
+
+function riffi_saved_settings(array $cfg): array
+{
+    $raw = @file_get_contents(riffi_settings_path($cfg));
+    $j = is_string($raw) ? json_decode($raw, true) : null;
+    return is_array($j) ? $j : [];
+}
+
+function riffi_save_settings(array $cfg, array $changes): void
+{
+    $path = riffi_settings_path($cfg);
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+        throw new RiffiHttpError(500, 'settings_unwritable', 'The settings could not be saved.');
+    }
+    $next = $changes + riffi_saved_settings($cfg);
+    if (@file_put_contents($path, json_encode($next, JSON_UNESCAPED_SLASHES), LOCK_EX) === false) {
+        throw new RiffiHttpError(500, 'settings_unwritable', 'The settings could not be saved.');
+    }
+    @chmod($path, 0600);
+}
+
+/**
+ * The music reader for every scan: the one saved in Settings (with the admin
+ * password) if it still has a key, otherwise the config's PROVIDER. The app
+ * never chooses; nobody can switch readers without the password.
+ */
+function riffi_active_provider(array $cfg): string
+{
+    $saved = strtolower((string) (riffi_saved_settings($cfg)['provider'] ?? ''));
+    if ($saved !== '' && in_array($saved, riffi_configured_providers($cfg), true)) {
+        return $saved;
+    }
+    return strtolower((string) $cfg['PROVIDER']);
+}
+
+function riffi_provider(array $cfg): RiffiProvider
+{
+    $name = riffi_active_provider($cfg);
     if ($name === 'claude') {
         if (empty($cfg['ANTHROPIC_API_KEY'])) {
             throw new RiffiHttpError(500, 'not_configured', 'The music reader is not set up yet (no ANTHROPIC_API_KEY).');
@@ -1327,6 +1384,92 @@ function riffi_provider(array $cfg, string $choice = ''): RiffiProvider
         return new RiffiGemini($cfg);
     }
     throw new RiffiHttpError(500, 'not_configured', 'Unknown PROVIDER in config.');
+}
+
+// ---------------------------------------------------------------------------
+// Changing the music reader (admin password)
+
+const RIFFI_ADMIN_MAX_FAILS = 5;
+const RIFFI_ADMIN_WINDOW = 900;
+
+/** Where this IP's recent wrong password attempts are counted (salted hash, no IPs on disk). */
+function riffi_admin_fails_file(array $cfg): string
+{
+    $dir = $cfg['RATE_LIMIT_DIR'] ?: (sys_get_temp_dir() . '/riffi-ratelimit');
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0700, true);
+    }
+    $salt = hash('sha256', (string) $cfg['ADMIN_PASSWORD'] . 'riffi-admin');
+    return $dir . '/admin-' . hash('sha256', $salt . riffi_client_ip($cfg)) . '.json';
+}
+
+/**
+ * Check the admin password (constant time), allowing at most 5 wrong attempts
+ * per IP per 15 minutes. Throws on a wrong password or a lockout.
+ */
+function riffi_check_admin(array $cfg, string $given): void
+{
+    $password = (string) $cfg['ADMIN_PASSWORD'];
+    if ($password === '') {
+        throw new RiffiHttpError(403, 'admin_off', 'Changing the music reader is switched off.');
+    }
+    $file = riffi_admin_fails_file($cfg);
+    $fh = @fopen($file, 'c+');
+    $now = time();
+    $fails = [];
+    if ($fh) {
+        flock($fh, LOCK_EX);
+        $raw = stream_get_contents($fh);
+        $fails = array_values(array_filter(
+            is_string($raw) && $raw !== '' ? (json_decode($raw, true) ?: []) : [],
+            static fn ($t) => is_int($t) && $t > $now - RIFFI_ADMIN_WINDOW
+        ));
+    }
+    try {
+        if (count($fails) >= RIFFI_ADMIN_MAX_FAILS) {
+            $retry = max(60, RIFFI_ADMIN_WINDOW - ($now - min($fails)));
+            throw new RiffiHttpError(429, 'locked', 'Too many wrong passwords.', '', $retry);
+        }
+        // Compare fixed-length hashes so neither the content nor the length leaks through timing.
+        if (!hash_equals(hash('sha256', $password), hash('sha256', $given))) {
+            $fails[] = $now;
+            RiffiLog::write('admin_wrong_password', ['fails' => count($fails)]);
+            $left = RIFFI_ADMIN_MAX_FAILS - count($fails);
+            if ($left <= 0) {
+                throw new RiffiHttpError(429, 'locked', 'Too many wrong passwords.', '', RIFFI_ADMIN_WINDOW);
+            }
+            throw new RiffiHttpError(403, 'wrong_password', 'That password is not right.', (string) $left);
+        }
+        $fails = [];
+    } finally {
+        if ($fh) {
+            ftruncate($fh, 0);
+            rewind($fh);
+            fwrite($fh, json_encode($fails));
+            flock($fh, LOCK_UN);
+            fclose($fh);
+        }
+    }
+}
+
+/**
+ * POST ?admin=1 with password (and provider, to change it). With just the
+ * password, says which readers can be chosen; with a provider too, saves it
+ * for the whole site.
+ */
+function riffi_handle_admin(array $cfg): void
+{
+    riffi_check_admin($cfg, (string) ($_POST['password'] ?? ''));
+    $configured = riffi_configured_providers($cfg);
+    $choice = strtolower((string) ($_POST['provider'] ?? ''));
+    if ($choice !== '') {
+        if (!in_array($choice, $configured, true)) {
+            throw new RiffiHttpError(400, 'provider', 'That music reader has no key set up.');
+        }
+        riffi_save_settings($cfg, ['provider' => $choice, 'changed' => gmdate('c')]);
+        RiffiLog::write('provider_changed', ['provider' => $choice]);
+    }
+    riffi_json(200, ['ok' => true, 'provider' => riffi_active_provider($cfg), 'providers' => $configured, 'names' => RIFFI_PROVIDER_NAMES]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1512,7 +1655,7 @@ function riffi_handle_scan(array $cfg): void
     if ($mode === 'overview') {
         $cfg['GEMINI_THINKING'] = (string) $cfg['GEMINI_THINKING_OVERVIEW'];
     }
-    $provider = riffi_provider($cfg, (string) ($_POST['provider'] ?? ''));
+    $provider = riffi_provider($cfg);
     $instrument = (string) ($_POST['instrument'] ?? 'violin');
     if (!in_array($instrument, RIFFI_INSTRUMENTS, true)) {
         throw new RiffiHttpError(400, 'instrument', 'Unknown instrument.');
@@ -1590,12 +1733,18 @@ function riffi_handle_scan(array $cfg): void
 function riffi_handle_info(array $cfg): void
 {
     $providers = riffi_configured_providers($cfg);
+    $active = riffi_active_provider($cfg);
     riffi_json(200, [
         'providers' => $providers,
-        'default' => $providers[0] ?? null,
+        // The reader every scan uses (chosen in Settings with the admin password, or PROVIDER).
+        'provider' => $active,
+        'default' => $active,
+        'names' => RIFFI_PROVIDER_NAMES,
+        'can_change' => (string) $cfg['ADMIN_PASSWORD'] !== '',
         'rpm' => ['gemini' => (int) $cfg['GEMINI_RPM'], 'claude' => (int) $cfg['CLAUDE_RPM']],
         'lines_per_request' => max(1, (int) $cfg['LINES_PER_REQUEST']),
-        'version' => 2,
+        'check_rounds' => max(0, min(2, (int) $cfg['CHECK_ROUNDS'])),
+        'version' => 3,
     ]);
 }
 
@@ -1624,7 +1773,7 @@ function riffi_handle_check(array $cfg): void
         'curl' => function_exists('curl_init') ? (curl_version()['version'] ?? 'yes') : false,
         'tls' => function_exists('curl_version') ? (curl_version()['ssl_version'] ?? '') : '',
         'config' => $GLOBALS['riffi_config_source'],
-        'provider' => strtolower((string) $cfg['PROVIDER']),
+        'provider' => riffi_active_provider($cfg),
         'request_seconds' => (int) $cfg['REQUEST_SECONDS'],
         'log' => RiffiLog::where(),
     ];
@@ -1670,6 +1819,9 @@ function riffi_main(): void
         if ($method === 'GET' && isset($_GET['info'])) {
             riffi_handle_info($cfg);
         }
+        if ($method === 'POST' && isset($_GET['admin'])) {
+            riffi_handle_admin($cfg);
+        }
         if ($method !== 'POST') {
             header('Allow: POST, OPTIONS');
             throw new RiffiHttpError(405, 'method', 'Use POST.');
@@ -1679,7 +1831,11 @@ function riffi_main(): void
         if ($cfg !== null) {
             RiffiLog::write('request_refused', ['status' => $e->status, 'code' => $e->errorCode]);
         }
-        riffi_json($e->status, ['error' => $e->getMessage(), 'code' => $e->errorCode, 'retry_after' => $e->retryAfter ?: null, 'ref' => RiffiLog::$ref]);
+        $body = ['error' => $e->getMessage(), 'code' => $e->errorCode, 'retry_after' => $e->retryAfter ?: null, 'ref' => RiffiLog::$ref];
+        if ($e->errorCode === 'wrong_password') {
+            $body['attempts_left'] = (int) $e->detail;
+        }
+        riffi_json($e->status, $body);
     } catch (Throwable $e) {
         if ($cfg !== null) {
             RiffiLog::write('crash', ['error' => RiffiLog::scrub($e->getMessage()), 'line' => $e->getLine()]);

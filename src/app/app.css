@@ -1092,28 +1092,65 @@
   padding: 16px;
 }
 
-.gadget-card {
-  display: flex;
+/* Player switcher (top of every main screen) */
+.app-topbar {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-4) 0;
+}
+.player-switch {
+  display: inline-flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 16px;
-  padding: 16px 20px;
+  gap: 10px;
+  min-height: 56px;
+  max-width: 100%;
+  padding: 4px 12px 4px 4px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: transparent;
   color: var(--text);
-  text-decoration: none;
-  min-height: 72px;
+  font: inherit;
+  font-size: 22px;
+  font-weight: 750;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color var(--speed) ease;
 }
-.gadget-card > span:nth-child(2) {
-  flex: 1;
+.player-switch:hover {
+  background: var(--surface-2);
 }
-.gadget-card-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(160deg, #f4f5f7, #c7ccd3);
-  color: #2b2f36;
+.player-switch:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.player-greeting {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Are you sure? */
+.confirm-dialog p {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+/* Music reader choice */
+.reader-row {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.reader-option {
+  justify-content: flex-start;
+  width: 100%;
+}
+.reader-option.current {
+  border-color: var(--primary);
 }
 
 .check-list {
@@ -1202,4 +1239,42 @@
 :root[data-theme='dark'] .bar-chip.btn,
 :root[data-theme='dark'] .bar-flag-badge {
   color: #1a1200;
+}
+
+/* Editing a saved piece */
+.reader-used {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -8px;
+}
+.bar-photo {
+  margin: 0 0 12px;
+}
+.bar-photo figcaption {
+  margin-bottom: 6px;
+}
+.photo-slice {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  object-position: left center;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  background: #fff;
+}
+.photo-slice.placeholder {
+  height: 96px;
+}
+.review-extra {
+  margin: 12px 0;
+}
+.sticky-buttons {
+  flex-wrap: nowrap;
+}
+.edited-note {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }

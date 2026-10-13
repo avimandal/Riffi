@@ -23,6 +23,8 @@ export interface PreparedPage {
   lines: Blob[];
   /** Note heads measured on each line: [line][staff] → heads left to right. Named once the clef is known. */
   heads?: Head[][][];
+  /** Where each line is on the page, as fractions of its height (top, bottom). */
+  bands?: { top: number; bottom: number }[];
   /** False if no staves were found, and the whole page is sent as one "line". */
   detected: boolean;
 }
@@ -72,5 +74,5 @@ export async function preparePage(page: PageDraft, instrument: Instrument): Prom
   for (const b of bands) lines.push(await canvasToJpeg(crop(full, Math.floor(b.y0 * k), Math.ceil(b.y1 * k), LINE_MAX_WIDTH), 0.9));
   const found = findHeads(gray, w, h, staves);
   const heads = bands.map((b) => b.staves.map((st) => found[staves.indexOf(st)] ?? []));
-  return { context, lines, heads, detected: true };
+  return { context, lines, heads, bands: bands.map((b) => ({ top: b.y0 / h, bottom: b.y1 / h })), detected: true };
 }

@@ -11,7 +11,7 @@ async function openAddMusic(page: Page) {
   await page.getByTestId('add-kid').click();
   await page.getByLabel('Name').fill('Ava');
   await page.getByRole('button', { name: "Let's go!" }).click();
-  await expect(page.getByRole('heading', { name: /Ava!/ })).toBeVisible();
+  await expect(page.getByTestId('switch-player')).toContainText('Ava!');
   await page.getByTestId('add-music').click();
   await expect(page.getByRole('heading', { name: 'Add music' })).toBeVisible();
 }
