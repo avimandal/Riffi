@@ -16,7 +16,21 @@ export const REF_MAX = 445;
 export const REF_DEFAULT = 440;
 
 /** Within this many cents counts as in tune (green). */
-export const IN_TUNE_CENTS = 5;
+export const IN_TUNE_CENTS = 10;
+
+/** How the tuner steadies the raw pitch (see TunerSmoother). */
+export const TUNER_SMOOTHING = {
+  /** Average over this much recent sound: a few vibrato cycles, so vibrato cancels out. */
+  windowMs: 800,
+  /** A different note must hold this long before the display moves to it (drops overtone blips). */
+  changeMs: 160,
+  /** The first note shows after this long. */
+  firstMs: 90,
+  /** Readings this close (semitones) count as the same note. */
+  sameNote: 0.5,
+  /** Keep showing the last note this long after the sound stops. */
+  holdMs: 1200,
+} as const;
 
 /** What each tuner preset listens for (MIDI range). */
 export const TUNER_RANGE: Record<TunerInstrument, { low: number; high: number }> = {
@@ -77,6 +91,63 @@ export function tunerReading(midi440: number, refHz: number, instrument: TunerIn
   const cents = Math.round((m - target) * 100);
   const status = Math.abs(cents) <= IN_TUNE_CENTS ? 'in' : cents < 0 ? 'flat' : 'sharp';
   return { target, ...noteParts(target), cents, status, string: chosen };
+}
+
+/**
+ * Steadies the pitch engine's readings for the tuner display: averages the
+ * last ~0.8 s of the note being shown (so vibrato and bow noise cancel out),
+ * ignores brief jumps (an overtone popping out, a scratch), and only moves to a
+ * new note once it has held for a moment. Works in MIDI (A = 440). Pure.
+ */
+export class TunerSmoother {
+  private readings: { midi: number; t: number }[] = [];
+  private candidate: { midi: number; t: number }[] = [];
+  private lastHeard = -Infinity;
+  private note: number | null = null;
+
+  constructor(private readonly cfg: typeof TUNER_SMOOTHING = TUNER_SMOOTHING) {}
+
+  /** Feed the latest reading (null when nothing clear is heard) at time `t` (ms). Returns the pitch to show, or null. */
+  push(midi: number | null, t: number): number | null {
+    const c = this.cfg;
+    if (midi !== null && Number.isFinite(midi)) {
+      this.lastHeard = t;
+      if (this.note !== null && Math.abs(midi - this.note) <= c.sameNote) {
+        this.readings.push({ midi, t });
+        this.candidate = [];
+      } else {
+        // Something else: a new note, or a blip. Collect it until it proves itself.
+        if (this.candidate.length && Math.abs(midi - median(this.candidate.map((x) => x.midi))) > c.sameNote) this.candidate = [];
+        this.candidate.push({ midi, t });
+        const held = t - this.candidate[0].t;
+        if (held >= (this.note === null ? c.firstMs : c.changeMs)) {
+          this.readings = this.candidate;
+          this.candidate = [];
+        }
+      }
+      if (this.readings.length) this.note = median(this.readings.slice(-8).map((x) => x.midi));
+    }
+    if (t - this.lastHeard > c.holdMs) {
+      this.reset();
+      return null;
+    }
+    this.readings = this.readings.filter((x) => x.t >= t - c.windowMs);
+    if (this.note === null) return null;
+    if (this.readings.length === 0) return this.note;
+    return this.readings.reduce((s, x) => s + x.midi, 0) / this.readings.length;
+  }
+
+  reset() {
+    this.readings = [];
+    this.candidate = [];
+    this.note = null;
+  }
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
 /** Frequency of a note in the chosen reference tuning. */

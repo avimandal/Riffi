@@ -136,3 +136,84 @@ export class StreamingResampler {
     return Float32Array.from(out);
   }
 }
+
+/** Power of one frequency in a (windowed) frame: a single DFT bin, anywhere. */
+export function powerAt(frame: Float32Array, sampleRate: number, hz: number): number {
+  const w = (2 * Math.PI * hz) / sampleRate;
+  // Goertzel recurrence.
+  const k = 2 * Math.cos(w);
+  let s1 = 0;
+  let s2 = 0;
+  for (let i = 0; i < frame.length; i++) {
+    const s0 = frame[i] + k * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  return s1 * s1 + s2 * s2 - k * s1 * s2;
+}
+
+const hannCache = new Map<number, Float32Array>();
+function hann(n: number): Float32Array {
+  let w = hannCache.get(n);
+  if (!w) {
+    w = new Float32Array(n);
+    for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1));
+    hannCache.set(n, w);
+  }
+  return w;
+}
+
+/**
+ * Guard against overtone (octave / twelfth) errors. Time-domain trackers lock
+ * onto the 2nd or 3rd harmonic when the fundamental is weak, which is normal for
+ * a violin's low strings through a phone mic (and in the first few hundred ms
+ * of a soft bow stroke). If `hz` were really the k-th harmonic of `hz / k`, the
+ * frame would also hold partials *between* the harmonics of `hz` (at hz·j/k); a
+ * true fundamental has only noise there. Steps down while that evidence is
+ * strong, both relative to the harmonics and to the frame's average spectral
+ * level, and the lower pitch is still >= `minHz`. Returns the corrected
+ * frequency. Pure.
+ */
+export function fundamentalOf(
+  frame: Float32Array,
+  sampleRate: number,
+  hz: number,
+  minHz: number,
+  opts: { minRatio: number; minOverLevel: number } = { minRatio: 0.01, minOverLevel: 1.6 },
+): number {
+  const w = hann(frame.length);
+  const x = new Float32Array(frame.length);
+  // White noise of the same energy has this expected power in any one bin.
+  let level = 0;
+  for (let i = 0; i < x.length; i++) {
+    x[i] = frame[i] * w[i];
+    level += x[i] * x[i];
+  }
+  if (level <= 0) return hz;
+  const nyq = sampleRate * 0.45;
+  const p = (f: number) => (f > 0 && f < nyq ? powerAt(x, sampleRate, f) : 0);
+  let f = hz;
+  for (let step = 0; step < 3; step++) {
+    const onHarmonics = p(f) + p(2 * f) + p(3 * f);
+    if (onHarmonics <= 0) break;
+    let next = 0;
+    // Twelfth first (hz is the 3rd harmonic), then octave (2nd).
+    for (const k of [3, 2]) {
+      if (f / k < minHz) continue;
+      let between = 0;
+      let n = 0;
+      for (let j = 1; j < 3 * k; j++) {
+        if (j % k === 0) continue;
+        between += p((f * j) / k);
+        n++;
+      }
+      if (between >= opts.minRatio * onHarmonics && between / n >= opts.minOverLevel * level) {
+        next = f / k;
+        break;
+      }
+    }
+    if (!next) break;
+    f = next;
+  }
+  return f;
+}

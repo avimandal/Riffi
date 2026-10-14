@@ -1,7 +1,7 @@
 import { PitchDetector } from 'pitchy';
 import { INSTRUMENT_RANGE, type Instrument } from '../../config';
-import { Biquad, median, rms } from '../../audio/dsp';
-import { centsOf, hzToMidi, type ListeningEngine, type NoteEvent } from '../types';
+import { Biquad, fundamentalOf, median, rms } from '../../audio/dsp';
+import { centsOf, hzToMidi, midiToHz, type ListeningEngine, type NoteEvent } from '../types';
 
 /** Mono engine tuning (violin, voice). SPEC §6.1. */
 export const MONO_ENGINE = {
@@ -48,6 +48,13 @@ export const MONO_ENGINE = {
   glideOffGridCents: 25,
   /** Range slack either side of the instrument range, in semitones. */
   rangeSlack: 1,
+  /**
+   * Overtone guard (see fundamentalOf): step down to hz/2 or hz/3 when the
+   * partials between hz's harmonics hold at least this share of the power on
+   * them, and stand this far above the frame's average spectral level.
+   * Measured on real violin recordings through simulated phone mics.
+   */
+  overtone: { minRatio: 0.01, minOverLevel: 1.6 },
 } as const;
 
 interface Frame {
@@ -97,6 +104,7 @@ export class MonoEngine implements ListeningEngine {
   private readonly maxMidi: number;
   private readonly threshold: number;
   private readonly hopMs: number;
+  private readonly minHz: number;
 
   private medianBuf: number[] = [];
   private out: NoteEvent[] = [];
@@ -132,6 +140,7 @@ export class MonoEngine implements ListeningEngine {
         ? Math.max(cfg.minRmsThreshold, opts.noiseFloor * cfg.noiseFloorMultiplier)
         : cfg.defaultRmsThreshold;
     this.hopMs = (cfg.hopSize / sr) * 1000;
+    this.minHz = midiToHz(this.minMidi);
   }
 
   /** Metronome click times (session ms, already in the corrected time base). Replaces all masks. */
@@ -200,7 +209,9 @@ export class MonoEngine implements ListeningEngine {
       const [hz, c] = this.detector.findPitch(this.window, sr);
       clarity = c;
       if (c >= cfg.minClarity && hz > 0) {
-        midi = hzToMidi(hz);
+        // A weak fundamental (low strings, small mics) can make the tracker lock onto an overtone.
+        const f = hz / 2 >= this.minHz ? fundamentalOf(this.window, sr, hz, this.minHz, cfg.overtone) : hz;
+        midi = hzToMidi(f);
         voiced = midi >= this.minMidi && midi <= this.maxMidi;
       }
     }
