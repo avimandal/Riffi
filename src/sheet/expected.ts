@@ -45,6 +45,35 @@ export function expandRepeats(measures: ScoreMeasure[]): number[] {
   return order;
 }
 
+/**
+ * Repeat signs ignored: every bar once, in written order. Of a set of volta
+ * endings ("1." / "2."), only the last is played, as when a repeat is skipped.
+ * Returns measure indices.
+ */
+export function straightThrough(measures: ScoreMeasure[]): number[] {
+  const order: number[] = [];
+  let i = 0;
+  while (i < measures.length) {
+    if (!measures[i].endingNumbers) {
+      order.push(i);
+      i++;
+      continue;
+    }
+    // A run of bars under ending brackets: keep the bracket(s) for the last pass.
+    let j = i;
+    while (j < measures.length && measures[j].endingNumbers) j++;
+    const last = Math.max(...measures.slice(i, j).flatMap((m) => m.endingNumbers ?? []));
+    for (let k = i; k < j; k++) if (measures[k].endingNumbers!.includes(last)) order.push(k);
+    i = j;
+  }
+  return order;
+}
+
+/** Whether the music has any repeat signs or volta endings. */
+export function hasRepeats(measures: ScoreMeasure[]): boolean {
+  return measures.some((m) => m.forwardRepeat || m.backwardRepeat || !!m.endingNumbers);
+}
+
 export interface ExpectedNote {
   /** Position in the expected list. */
   id: number;
@@ -88,6 +117,8 @@ export interface BuildOptions {
   bpm: number;
   partIndex?: number;
   loop?: LoopRange;
+  /** Follow repeat signs (default). Off = every bar once, straight through. */
+  playRepeats?: boolean;
 }
 
 export function msPerQuarterFor(bpm: number, beatType: number): number {
@@ -99,8 +130,8 @@ export function bpmFromTempoQ(tempoQ: number, beatType: number): number {
   return (tempoQ * beatType) / 4;
 }
 
-export function playOrder(score: ParsedScore, loop?: LoopRange): number[] {
-  const full = expandRepeats(score.measures);
+export function playOrder(score: ParsedScore, loop?: LoopRange, playRepeats = true): number[] {
+  const full = playRepeats ? expandRepeats(score.measures) : straightThrough(score.measures);
   if (!loop) return full;
   const from = Math.min(loop.fromIndex, loop.toIndex);
   const to = Math.max(loop.fromIndex, loop.toIndex);
@@ -116,8 +147,8 @@ export function playOrder(score: ParsedScore, loop?: LoopRange): number[] {
   return out;
 }
 
-export function buildTimeline(score: ParsedScore, bpm: number, loop?: LoopRange): Timeline {
-  const order = playOrder(score, loop);
+export function buildTimeline(score: ParsedScore, bpm: number, loop?: LoopRange, playRepeats = true): Timeline {
+  const order = playOrder(score, loop, playRepeats);
   const firstBeatType = score.measures[order[0] ?? 0]?.beatType ?? 4;
   const msPerQuarter = msPerQuarterFor(bpm, firstBeatType);
   const startsQ: number[] = [];
@@ -150,7 +181,7 @@ function selectNotes(score: ParsedScore, instrument: Instrument, partIndex: numb
  */
 export function buildExpectedNotes(score: ParsedScore, opts: BuildOptions): { notes: ExpectedNote[]; timeline: Timeline } {
   const partIndex = opts.partIndex ?? 0;
-  const timeline = buildTimeline(score, opts.bpm, opts.loop);
+  const timeline = buildTimeline(score, opts.bpm, opts.loop, opts.playRepeats ?? true);
   const { msPerQuarter } = timeline;
   const chosen = selectNotes(score, opts.instrument, partIndex);
   const byMeasure = new Map<number, ScoreNote[]>();

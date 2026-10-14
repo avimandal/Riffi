@@ -2,9 +2,10 @@ import { OmrError } from './omrClient';
 
 /**
  * Keeps requests to the music reader under the AI provider's per-minute limit
- * (Gemini's free tier allows only a handful a minute), and waits and retries
- * when the server says it's busy. Reading a page line by line makes ~20
- * requests, so this is what lets a busy page finish instead of failing.
+ * (Gemini's free tier allows only a handful a minute). When the server says
+ * it's pacing ('pace': nothing was sent to the AI) it waits its turn and sends
+ * again. It never re-sends after the AI itself said no (its rate limit, daily
+ * limit, overload or a timeout): the reader decides about the one retry.
  */
 
 export interface PacerOptions {
@@ -22,12 +23,18 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 export class RequestPacer {
   private starts: number[] = [];
   private waited = 0;
+  private heldUntil = 0;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly opts: PacerOptions) {
     this.now = opts.now ?? (() => Date.now());
     this.sleep = opts.sleep ?? defaultSleep;
+  }
+
+  /** Send nothing more until `ms` from now (e.g. after the AI's rate limit). */
+  hold(ms: number) {
+    this.heldUntil = Math.max(this.heldUntil, this.now() + ms);
   }
 
   /** Total time spent waiting so far (ms). */
@@ -53,6 +60,7 @@ export class RequestPacer {
   /** Space requests so no 60-second window holds more than `rpm` of them. */
   private async slot(onWait?: (seconds: number) => void) {
     const rpm = Math.max(1, this.opts.rpm);
+    if (this.heldUntil > this.now()) await this.wait(this.heldUntil - this.now(), onWait);
     for (;;) {
       const t = this.now();
       this.starts = this.starts.filter((s) => s > t - 60_000);
@@ -65,8 +73,8 @@ export class RequestPacer {
   }
 
   /**
-   * Run one request, pacing it and retrying when the reader is busy. A timeout is
-   * not retried here: the reader retries that line with a smaller request instead.
+   * Run one request, pacing it. Sent again only when the server was pacing
+   * ('pace': it didn't ask the AI), after the wait it names.
    */
   async run<T>(fn: () => Promise<T>, onWait?: (seconds: number) => void): Promise<T> {
     const maxRetries = this.opts.maxRetries ?? 5;
@@ -76,9 +84,8 @@ export class RequestPacer {
         return await fn();
       } catch (e) {
         if (!(e instanceof OmrError)) throw e;
-        if (e.kind !== 'busy' || attempt >= maxRetries) throw e;
-        const backoff = Math.min(90, 5 * 2 ** attempt);
-        await this.wait(Math.max(e.retryAfter ?? 0, backoff) * 1000, onWait);
+        if (e.code !== 'pace' || attempt >= maxRetries) throw e;
+        await this.wait(Math.max(e.retryAfter ?? 0, 2) * 1000, onWait);
       }
     }
   }

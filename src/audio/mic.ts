@@ -15,8 +15,10 @@ export class MicError extends Error {
 const loadedContexts = new WeakSet<BaseAudioContext>();
 
 /**
- * Microphone input via AudioWorklet. Echo cancellation on (helps with the
- * metronome); noise suppression and auto gain off (they damage instrument sound).
+ * Microphone input via AudioWorklet. Echo cancellation on by default (helps
+ * with the metronome); the tuner turns it off when no metronome is playing.
+ * Noise suppression and auto gain are always off (they damage instrument sound
+ * and bend pitch).
  */
 export class MicInput {
   private stream: MediaStream | null = null;

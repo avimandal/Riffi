@@ -51,6 +51,14 @@ interface StepRecord {
  * a skip; an extra note costs an insertion; so one slip doesn't derail
  * everything after it.
  *
+ * What it shows (`position`) only ever moves forward, and only on a confident
+ * match (right pitch, or close), so it holds its place through wrong and extra
+ * notes, and it can never fall back to the start: states more than a few notes
+ * behind what's shown are dropped. Onset times are judged against the player's
+ * own tempo, learnt from recent confident matches, so a child playing slower
+ * (or faster) than the metronome is still followed, and the follower can skip
+ * ahead when it's clearly behind.
+ *
  * States are "last matched expected note" (-1 = none yet), stored at offset +1.
  */
 export class ScoreFollower {
@@ -59,7 +67,12 @@ export class ScoreFollower {
   private lastOnset: Float64Array;
   private readonly records: StepRecord[] = [];
   private readonly groups: PlayedGroup[] = [];
+  /** Cheapest state (centres the search window). */
   private best = 0;
+  /** State shown to the player: only moves forward. */
+  private shown = 0;
+  /** Recent confident matches: written onset → played onset (ms), for the player's own tempo. */
+  private anchors: { exp: number; played: number }[] = [];
 
   constructor(
     private readonly expected: ExpectedNote[],
@@ -71,9 +84,29 @@ export class ScoreFollower {
     this.lastOnset = new Float64Array(this.n + 1).fill(NaN);
   }
 
-  /** Index of the expected note most recently matched (-1 if none). */
+  /** Index of the expected note the player is at (-1 before the first). Never goes backwards. */
   get position(): number {
-    return this.best - 1;
+    return this.shown - 1;
+  }
+
+  /** When the player would play an expected onset, going by their recent tempo (ms). */
+  private predict(expOnset: number): { at: number; stretch: number } {
+    const a = this.anchors;
+    if (a.length === 0) return { at: expOnset, stretch: 1 };
+    const last = a[a.length - 1];
+    if (a.length < 3) return { at: last.played + (expOnset - last.exp), stretch: 1 };
+    // Least-squares line through the recent anchors.
+    const mx = a.reduce((s, x) => s + x.exp, 0) / a.length;
+    const my = a.reduce((s, x) => s + x.played, 0) / a.length;
+    let sxx = 0;
+    let sxy = 0;
+    for (const x of a) {
+      sxx += (x.exp - mx) ** 2;
+      sxy += (x.exp - mx) * (x.played - my);
+    }
+    const stretch = sxx > 0 ? Math.max(0.6, Math.min(1.8, sxy / sxx)) : 1;
+    // Anchor the line on the newest match (the player's latest position matters most).
+    return { at: last.played + stretch * (expOnset - last.exp), stretch };
   }
 
   private matchCost(g: PlayedGroup, t: number, prevState: number): number {
@@ -81,16 +114,17 @@ export class ScoreFollower {
     const e = this.expected[t];
     const pc = pitchCost(g.pitches, e.pitches, this.opts.instrument);
     if (this.opts.ignoreTiming) return cfg.pitchWeight * pc;
-    const scale = 2 * this.opts.msPerQuarter;
-    const absTerm = Math.min(1, Math.abs(g.onsetMs - e.onsetMs) / scale);
+    const { at, stretch } = this.predict(e.onsetMs);
+    const scale = 2 * this.opts.msPerQuarter * stretch;
+    const absTerm = Math.min(1, Math.abs(g.onsetMs - at) / scale);
     let relTerm = absTerm;
     const prevOnset = this.lastOnset[prevState];
     if (prevState > 0 && Number.isFinite(prevOnset)) {
-      const expGap = e.onsetMs - this.expected[prevState - 1].onsetMs;
+      const expGap = (e.onsetMs - this.expected[prevState - 1].onsetMs) * stretch;
       const gap = g.onsetMs - prevOnset;
       relTerm = Math.min(1, Math.abs(gap - expGap) / scale);
     }
-    // Absolute time keeps us honest with the metronome; relative time tolerates drift.
+    // Where the player's own tempo says we are keeps us on track; the gap since the last note tolerates drift.
     return cfg.pitchWeight * pc + cfg.timeWeight * (0.4 * absTerm + 0.6 * relTerm);
   }
 
@@ -98,20 +132,37 @@ export class ScoreFollower {
   push(g: PlayedGroup): number {
     const cfg = SCORING.follow;
     const n1 = this.n + 1;
-    const lo = Math.max(1, this.best - cfg.windowBehind);
-    const hi = Math.min(this.n, this.best + cfg.windowAhead);
+    // Nothing more than a few notes behind what's shown can come back (no jumping back to the start).
+    const floor = Math.max(0, this.shown - cfg.windowBehind);
+    const lo = Math.max(1, Math.min(this.best, this.shown) - cfg.windowBehind);
+    const hi = Math.min(this.n, Math.max(this.best, this.shown) + cfg.windowAhead);
 
-    const next = new Float64Array(n1);
+    const next = new Float64Array(n1).fill(Infinity);
     const nextOnset = new Float64Array(this.lastOnset);
-    for (let s = 0; s < n1; s++) next[s] = this.cost[s] + cfg.insertCost;
+    for (let s = floor; s < n1; s++) next[s] = this.cost[s] + cfg.insertCost;
+
+    // Skipping a note is cheap when, by the player's own tempo, it's already in the past (it was missed),
+    // and full price when it's still to come (that would be jumping ahead).
+    const first = Math.max(0, Math.max(lo, floor) - cfg.maxSkip - 1);
+    const skipSum = new Float64Array(hi - first + 1);
+    for (let j = first; j < hi; j++) {
+      let c: number = cfg.skipCost;
+      if (!this.opts.ignoreTiming) {
+        const { at, stretch } = this.predict(this.expected[j].onsetMs);
+        if (at < g.onsetMs - Math.max(cfg.passedMinMs, 0.5 * this.opts.msPerQuarter * stretch)) c = cfg.passedSkipCost;
+      }
+      skipSum[j - first + 1] = skipSum[j - first] + c;
+    }
+    // Cost of skipping expected notes k..t-2 (between state k and state t).
+    const skips = (k: number, t: number) => skipSum[t - 1 - first] - skipSum[k - first];
 
     const from = new Int32Array(Math.max(0, hi - lo + 1)).fill(-1);
-    for (let t = lo; t <= hi; t++) {
-      const kMin = Math.max(0, t - cfg.maxSkip - 1);
+    for (let t = Math.max(lo, floor); t <= hi; t++) {
+      const kMin = Math.max(floor, t - cfg.maxSkip - 1);
       for (let k = kMin; k < t; k++) {
         const base = this.cost[k];
         if (!Number.isFinite(base)) continue;
-        const c = base + cfg.skipCost * (t - k - 1) + this.matchCost(g, t - 1, k);
+        const c = base + skips(k, t) + this.matchCost(g, t - 1, k);
         if (c < next[t]) {
           next[t] = c;
           from[t - lo] = k;
@@ -125,11 +176,21 @@ export class ScoreFollower {
     this.lastOnset = nextOnset;
 
     // Best state: lowest cost, preferring later positions on near-ties.
-    let best = 0;
-    for (let s = 0; s < n1; s++) {
+    let best = floor;
+    for (let s = floor; s < n1; s++) {
       if (next[s] <= next[best] + 1e-9) best = s;
     }
     this.best = best;
+
+    // Move what's shown forward only when this note confidently matched the new best note.
+    if (best > this.shown && best >= lo && from[best - lo] >= 0) {
+      const e = this.expected[best - 1];
+      if (pitchCost(g.pitches, e.pitches, this.opts.instrument) <= cfg.confidentPitch) {
+        this.shown = best;
+        this.anchors.push({ exp: e.onsetMs, played: g.onsetMs });
+        if (this.anchors.length > cfg.tempoAnchors) this.anchors.shift();
+      }
+    }
     return this.position;
   }
 

@@ -8,6 +8,7 @@ import { MonoEngine } from '../../engines/mono/monoEngine';
 import { PianoEngine, type PianoMode, type PianoEngineStatus } from '../../engines/piano/pianoEngine';
 import type { ListeningEngine, NoteEvent } from '../../engines/types';
 import { groupIntoChords, LearnFollower, ScoreFollower } from '../../follow/follower';
+import { RunEnd } from '../../follow/runEnd';
 import { SCORING, pitchTolerance } from '../../scoring/config';
 import { scoreRun, type RunScore } from '../../scoring/score';
 import { buildExpectedNotes, type ExpectedNote, type LoopRange, type Timeline } from '../../sheet/expected';
@@ -20,6 +21,8 @@ export interface RunConfig {
   mode: PracticeMode;
   bpm: number;
   loop?: LoopRange;
+  /** Follow repeat signs; off = every bar once. */
+  playRepeats?: boolean;
   metronomeMode: MetronomeMode;
   metronomeVolume: number;
   latencyMs?: number;
@@ -53,7 +56,7 @@ export interface RunCallbacks {
   onPosition?: (index: number) => void;
   onPianoStatus?: (s: PianoEngineStatus) => void;
   onAnalyseProgress?: (fraction: number) => void;
-  /** Called when the run ends by itself (end of piece / every note found). */
+  /** Called when the run ends by itself (last bar played, long silence at the end, or every note found). */
   onAutoStop?: () => void;
 }
 
@@ -77,15 +80,18 @@ export class PracticeRun {
   private startAt = 0;
   private startedWall = 0;
   private offFrames: (() => void) | null = null;
-  private stopTimer: number | null = null;
+  private runEnd: RunEnd | null = null;
+  private autoStopped = false;
   private state: RunState = 'idle';
   private lastAudioMs = -Infinity;
+  /** Last time the input was loud (for engines that only report notes at the end). */
+  private lastLoudMs = -Infinity;
 
   constructor(
     private readonly cfg: RunConfig,
     private readonly cb: RunCallbacks = {},
   ) {
-    const built = buildExpectedNotes(cfg.score, { instrument: cfg.instrument, bpm: cfg.bpm, loop: cfg.loop });
+    const built = buildExpectedNotes(cfg.score, { instrument: cfg.instrument, bpm: cfg.bpm, loop: cfg.loop, playRepeats: cfg.playRepeats ?? false });
     this.expected = built.notes;
     this.timeline = built.timeline;
     this.beats = cfg.mode === 'playalong' ? buildBeatGrid(this.timeline) : [];
@@ -170,8 +176,9 @@ export class PracticeRun {
       this.engine.setClickTimes?.(this.cfg.metronomeMode === 'sound' ? this.beats.map((b) => b.timeMs) : []);
       this.setState('countin');
       window.setTimeout(() => this.state === 'countin' && this.setState('running'), lead * 1000);
-      const endMs = this.timeline.totalQ * this.timeline.msPerQuarter + 1500;
-      this.stopTimer = window.setTimeout(() => this.cb.onAutoStop?.(), lead * 1000 + endMs);
+      // Ends when the last bar has been played, or after a long silence at the end; never on a timer.
+      this.runEnd = new RunEnd(this.expected);
+      this.autoStopped = false;
     } else {
       this.engine.setClickTimes?.([]);
       this.setState('running');
@@ -183,7 +190,24 @@ export class PracticeRun {
       this.lastAudioMs = ms;
       this.engine?.process(samples, ms);
       this.followLive();
+      this.checkEnd(ms);
     });
+  }
+
+  /** Play-along: end the run by itself once the piece is really over (see RunEnd). */
+  private checkEnd(ms: number) {
+    const engine = this.engine;
+    if (!engine || !this.runEnd || !this.follower || this.autoStopped) return;
+    if ((engine.level ?? 0) >= 0.08) this.lastLoudMs = ms;
+    const notes = engine.notes();
+    const last = notes[notes.length - 1];
+    let soundEnd = last ? last.onsetMs + last.durationMs : -Infinity;
+    // Piano scored after the run has no live notes: go by loudness (the metronome has stopped by then).
+    if (this.piano?.mode === 'playThenScore') soundEnd = Math.max(soundEnd, this.lastLoudMs);
+    if (this.runEnd.shouldEnd(ms, this.follower.position, soundEnd)) {
+      this.autoStopped = true;
+      this.cb.onAutoStop?.();
+    }
   }
 
   /** Feed newly settled notes to the live follower and report the cursor. */
@@ -225,8 +249,7 @@ export class PracticeRun {
 
   /** Stop, analyse and score. */
   async stop(): Promise<RunOutcome> {
-    if (this.stopTimer !== null) window.clearTimeout(this.stopTimer);
-    this.stopTimer = null;
+    this.runEnd = null;
     this.metronome?.stop();
     this.offFrames?.();
     this.offFrames = null;
@@ -263,7 +286,7 @@ export class PracticeRun {
 
   /** Release everything (leaving the screen mid-run). */
   dispose() {
-    if (this.stopTimer !== null) window.clearTimeout(this.stopTimer);
+    this.runEnd = null;
     this.metronome?.stop();
     this.offFrames?.();
     this.mic?.stop();

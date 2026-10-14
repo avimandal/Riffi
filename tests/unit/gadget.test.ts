@@ -77,8 +77,9 @@ describe('tuner logic', () => {
   it('reads cents against the reference pitch', () => {
     expect(tunerReading(69, 440, 'chromatic')).toMatchObject({ letter: 'A', sharp: false, octave: 4, cents: 0, status: 'in' });
     expect(tunerReading(69.2, 440, 'chromatic')).toMatchObject({ cents: 20, status: 'sharp' });
-    // At A = 442, a 440 Hz A is about 8 cents flat.
-    expect(tunerReading(69, 442, 'chromatic')).toMatchObject({ letter: 'A', cents: -8, status: 'flat' });
+    // At A = 442, a 440 Hz A is about 8 cents flat: within ±10 cents counts as in tune.
+    expect(tunerReading(69, 442, 'chromatic')).toMatchObject({ letter: 'A', cents: -8, status: 'in' });
+    expect(tunerReading(68.88, 440, 'chromatic')).toMatchObject({ letter: 'A', cents: -12, status: 'flat' });
     expect(tunerReading(66.03, 440, 'voice')).toMatchObject({ letter: 'F', sharp: true, status: 'in' });
     expect(toReference(69, 440)).toBe(69);
     expect(noteHz(69, 442)).toBe(442);

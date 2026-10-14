@@ -1,6 +1,6 @@
 import type { Instrument } from '../config';
 import { barLength, checkLine, type BarProblem } from './checks';
-import { callReader, OmrError, type ReaderRequest, type ReaderResult } from './omrClient';
+import { callReader, isRateLimit, OmrError, type ReaderRequest, type ReaderResult } from './omrClient';
 import { headNames, lineHint } from './noteHeads';
 import { snapToHeads } from './snap';
 import { NotationError, notationToMusicXml, parseStaff, type RnMeasure, type RnScore } from './notation';
@@ -390,6 +390,8 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
   let provider: string | undefined;
   /** A problem no retry can fix: stop sending, keep what we have. */
   let fatal: OmrError | null = null;
+  /** The AI said "too many requests": no automatic retries from here on (each line still gets its first try). */
+  let noRetry = false;
 
   const request = async (base: ReadProgress, req: ReaderRequest, lines: number): Promise<ReaderResult> => {
     if (fatal) throw fatal;
@@ -407,6 +409,11 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
       const err = e instanceof OmrError ? e : null;
       timings.requests.push({ mode: req.mode, lines, ms: Date.now() - started, ok: false, code: err?.code ?? err?.kind ?? 'error', ref: err?.ref });
       if (isFatal(e)) fatal ??= e as OmrError;
+      if (isRateLimit(e)) {
+        noRetry = true;
+        // Give the AI's per-minute window time to clear before the next first try.
+        if (err?.code === 'ai_rate_limit') pacer.hold((err.retryAfter || 30) * 1000);
+      }
       throw e;
     }
   };
@@ -485,7 +492,13 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
   };
 
   const accept = (st: LineState, r: { measures?: unknown; unsure?: unknown } | undefined): boolean => {
-    const out = processLine(st.job, r, instrument);
+    let out: ReturnType<typeof processLine>;
+    try {
+      out = processLine(st.job, r, instrument);
+    } catch {
+      // A reply we can't make sense of loses this line only, never the page.
+      return false;
+    }
     if (out.measures.length === 0) return false;
     st.measures = out.measures;
     st.unsure = out.unsure;
@@ -533,11 +546,14 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     return missed;
   };
 
-  /** A failed request is tried once more, smaller: its lines one by one, or a lone line with a smaller picture. */
+  /**
+   * A failed request is tried once more, smaller: its lines one by one, or a lone
+   * line with a smaller picture. Never after the AI's rate limit or daily limit.
+   */
   const readWithRetry = async (group: LineState[]) => {
     const failed = await limit(() => readGroup(group));
     if (failed.length === 0) return;
-    const retry = failed.filter((st) => !isFatal(st.error) && !fatal);
+    const retry = failed.filter((st) => !isFatal(st.error) && !fatal && !noRetry && !isRateLimit(st.error));
     await Promise.all(
       retry.map((st) =>
         limit(async () => {
@@ -634,57 +650,85 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     }
     const replies = asArray<CheckLine>(((check.check ?? {}) as CheckReply).lines);
     ready.forEach(({ st }, k) => {
-      const c = replies.find((x) => Number(x.line) === st.job.line) ?? replies[k];
-      const mismatches = asArray<CheckLine['mismatches'][number]>(c?.mismatches);
-      if (c?.unsure) st.unsure = new Set(asArray<number>(c.unsure).map(Number));
-      if (!c || mismatches.length === 0 || !c.measures) {
-        st.trace.rounds.push({ mismatches, measures: st.measures, problems: st.problems, accepted: false });
+      try {
+        applyCheck(st, replies.find((x) => Number(x.line) === st.job.line) ?? replies[k]);
+      } catch {
+        // A correction we can't use: keep the first read.
         st.pending = false;
-        return;
       }
-      const firstBar = Number(st.measures.find((m) => !m.pickup)?.n ?? st.job.printedFirstBar ?? 1);
-      let corrected = normaliseLine(asArray<RnMeasure>(c.measures), firstBar, st.job.firstOfPiece);
-      if (st.job.firstOfPiece) corrected = markPickup(corrected, st.job.ctx.time);
-      const snapped = snapToHeads(corrected, st.job.heads, st.job.ctx.key ?? 0);
-      corrected = snapped.measures;
-      st.trace.snapped?.push(snapped.moved);
-      const newProblems = checkLine(corrected, { key: st.job.ctx.key, time: st.job.ctx.time, instrument, firstLine: st.job.firstOfPiece, lastLine: st.job.lastOfPiece, heads: st.job.heads });
-      // Take the correction unless it breaks more bars than it fixes.
-      const accepted = newProblems.length <= st.problems.length || corrected.length === st.measures.length;
-      st.trace.rounds.push({ mismatches, measures: corrected, problems: newProblems, accepted });
-      if (!accepted) {
-        st.pending = false;
-        return;
-      }
-      st.measures = corrected;
-      st.problems = newProblems;
     });
     report();
   }
 
+  function applyCheck(st: LineState, c: CheckLine | undefined) {
+    const mismatches = asArray<CheckLine['mismatches'][number]>(c?.mismatches);
+    if (c?.unsure) st.unsure = new Set(asArray<number>(c.unsure).map(Number));
+    if (!c || mismatches.length === 0 || !c.measures) {
+      st.trace.rounds.push({ mismatches, measures: st.measures, problems: st.problems, accepted: false });
+      st.pending = false;
+      return;
+    }
+    const firstBar = Number(st.measures.find((m) => !m.pickup)?.n ?? st.job.printedFirstBar ?? 1);
+    let corrected = normaliseLine(asArray<RnMeasure>(c.measures), firstBar, st.job.firstOfPiece);
+    if (st.job.firstOfPiece) corrected = markPickup(corrected, st.job.ctx.time);
+    const snapped = snapToHeads(corrected, st.job.heads, st.job.ctx.key ?? 0);
+    corrected = snapped.measures;
+    st.trace.snapped?.push(snapped.moved);
+    const newProblems = checkLine(corrected, { key: st.job.ctx.key, time: st.job.ctx.time, instrument, firstLine: st.job.firstOfPiece, lastLine: st.job.lastOfPiece, heads: st.job.heads });
+    // Take the correction unless it breaks more bars than it fixes.
+    const accepted = newProblems.length <= st.problems.length || corrected.length === st.measures.length;
+    st.trace.rounds.push({ mismatches, measures: corrected, problems: newProblems, accepted });
+    if (!accepted) {
+      st.pending = false;
+      return;
+    }
+    st.measures = corrected;
+    st.problems = newProblems;
+  }
+
   // 5. Put the piece together, numbering bars in order (a correction may have changed a line's bar count).
+  // A line whose notes can't be written out as MusicXML becomes a "read this line again" line; the rest is kept.
+  const convertible = (ms: RnMeasure[]) => {
+    try {
+      notationToMusicXml(pieceFrom([ms], overviews, staves, []).score, partName(instrument));
+      return true;
+    } catch (e) {
+      if (e instanceof NotationError || e instanceof OmrError) return false;
+      throw e;
+    }
+  };
   const entries: { m: RnMeasure; unsure: boolean; problems: BarProblem[] }[] = [];
   let n = 1;
   const lineBars: ReadResult['lineBars'] = [];
   const failed: FailedLine[] = [];
   for (const st of all) {
     st.trace.final = st.measures;
-    if (st.status !== 'done') {
-      timings.lines_failed++;
-      failed.push({ page: st.job.page, line: st.job.line, at: entries.length, kind: st.error?.kind ?? 'unreadable', code: st.error?.code, ref: st.error?.ref, job: st.job });
-      continue;
-    }
-    if (st.measures.length) lineBars.push({ page: st.job.page, line: st.job.line, from: entries.length, to: entries.length + st.measures.length - 1 });
-    for (const m of st.measures) {
+    const lineEntries: typeof entries = [];
+    let next = n;
+    for (const m of st.status === 'done' ? st.measures : []) {
       const local = Number(m.n);
-      const renumbered = m.pickup ? { ...m, n: 0 } : { ...m, n: n++ };
-      entries.push({
+      const renumbered = m.pickup ? { ...m, n: 0 } : { ...m, n: next++ };
+      lineEntries.push({
         m: renumbered,
         unsure: st.unsure.has(local),
         problems: st.problems.filter((x) => x.n === local).map((x) => ({ ...x, message: x.message.replace(`Bar ${local}`, `Bar ${renumbered.n}`) })),
       });
     }
+    if (st.status === 'done' && lineEntries.length && !convertible([...entries, ...lineEntries].map((x) => x.m))) {
+      st.status = 'failed';
+      st.error = new OmrError('unreadable', undefined, 'bad_notation');
+      timings.lines_read--;
+    }
+    if (st.status !== 'done') {
+      timings.lines_failed++;
+      failed.push({ page: st.job.page, line: st.job.line, at: entries.length, kind: st.error?.kind ?? 'unreadable', code: st.error?.code, ref: st.error?.ref, job: st.job });
+      continue;
+    }
+    if (lineEntries.length) lineBars.push({ page: st.job.page, line: st.job.line, from: entries.length, to: entries.length + lineEntries.length - 1 });
+    entries.push(...lineEntries);
+    n = next;
   }
+  if (entries.length === 0) throw fatal ?? new OmrError('unreadable', undefined, 'bad_notation');
   const { score } = pieceFrom([entries.map((x) => x.m)], overviews, staves, warnings);
   const flags: BarFlag[] = [];
   entries.forEach((x, index) => {
@@ -692,13 +736,7 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     if (x.unsure) reasons.push(`The music reader wasn't sure about bar ${x.m.n}.`);
     if (reasons.length) flags.push({ index, n: Number(x.m.n), reasons });
   });
-  let converted;
-  try {
-    converted = notationToMusicXml(score, partName(instrument));
-  } catch (e) {
-    if (e instanceof NotationError) throw new OmrError('unreadable', undefined, 'bad_notation');
-    throw e;
-  }
+  const converted = notationToMusicXml(score, partName(instrument));
   timings.wait_ms = Math.round(pacer.waitedMs);
   timings.total_ms = Date.now() - t0 + timings.prep_ms;
   return {

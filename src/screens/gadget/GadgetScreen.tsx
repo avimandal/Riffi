@@ -28,6 +28,7 @@ import {
   TUNER_INSTRUMENTS,
   TUNER_RANGE,
   tunerReading,
+  TunerSmoother,
   VIOLIN_STRINGS,
   type TunerReading,
   type ViolinString,
@@ -357,7 +358,9 @@ export default function GadgetScreen() {
       const a = await ensureAudio();
       listener.current ??= new GadgetListener(a.ctx);
       try {
-        await listener.current.start({ range: TUNER_RANGE[instrument], latencyMs: device.latencyMs, noiseFloor: device.noiseFloor });
+        // Tuner: the phone's voice processing (echo cancelling, noise suppression, auto gain) bends pitch, so it's all off,
+        // unless the metronome is clicking (then echo cancelling stays on, and the clicks are masked as before).
+        await listener.current.start({ range: TUNER_RANGE[instrument], latencyMs: device.latencyMs, noiseFloor: device.noiseFloor, rawMic: !metro.current?.running });
         setListening(true);
       } catch (e) {
         setListening(false);
@@ -367,24 +370,20 @@ export default function GadgetScreen() {
     [ensureAudio, state.tunerInstrument, device.latencyMs, device.noiseFloor],
   );
 
-  // Read the pitch; hold the last reading briefly so it doesn't flicker.
+  // Read the pitch; steady it (vibrato, overtone blips) and hold the last note briefly so it doesn't flicker.
   useEffect(() => {
     if (mode !== 'tuner' || !listening) return;
     let raf = 0;
-    let lastAt = 0;
     let lastUpdate = 0;
-    let smooth: number | null = null;
     let lastSr = 0;
+    const smoother = new TunerSmoother();
     const frame = (now: number) => {
       const r = listener.current?.reading;
-      if (r) {
-        smooth = smooth === null || Math.abs(r.midi - smooth) > 0.5 ? r.midi : smooth + (r.midi - smooth) * 0.35;
-        lastAt = now;
-      }
+      const shown = smoother.push(r ? r.midi : null, now);
       if (now - lastUpdate > 50) {
         lastUpdate = now;
-        if (smooth !== null && now - lastAt < 1200) {
-          const rd = tunerReading(smooth, state.refHz, state.tunerInstrument, string);
+        if (shown !== null) {
+          const rd = tunerReading(shown, state.refHz, state.tunerInstrument, string);
           setReading(rd);
           setLed(rd.status);
           if (now - lastSr > 1500) {
@@ -392,7 +391,6 @@ export default function GadgetScreen() {
             setSrText(t.gadget.tuner.status(`${rd.letter}${rd.sharp ? ' sharp' : ''}`, rd.cents, rd.status));
           }
         } else {
-          smooth = null;
           setReading(null);
           setLed('off');
         }

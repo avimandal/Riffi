@@ -57,6 +57,11 @@ export async function savePiece(p: Omit<Piece, 'id' | 'createdAt' | 'updatedAt'>
   return piece;
 }
 
+/** Remember the Practice screen's "Play repeats" choice for a piece (doesn't count as an edit). */
+export async function setPlayRepeats(id: string, playRepeats: boolean) {
+  await db.pieces.update(id, { playRepeats });
+}
+
 export async function deletePiece(id: string) {
   await db.transaction('rw', db.pieces, db.sessions, async () => {
     await db.sessions.where('pieceId').equals(id).delete();

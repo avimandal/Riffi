@@ -14,10 +14,10 @@ import { SheetView, type SheetHandle } from '../../components/SheetView';
 import { SoundCheck } from '../../components/SoundCheck';
 import { canVibrate } from '../../audio/metronome';
 import { MicError } from '../../audio/mic';
-import { getPiece, recordSession } from '../../data/repo';
+import { getPiece, recordSession, setPlayRepeats } from '../../data/repo';
 import type { Piece, StoredNoteMark } from '../../data/types';
 import { findIssues } from '../../scoring/feedback';
-import { defaultBpm } from '../../sheet/expected';
+import { defaultBpm, hasRepeats } from '../../sheet/expected';
 import { noteName, parseMusicXml } from '../../sheet/musicxml';
 import { PracticeRun, pianoReady, type RunOutcome, type RunState } from './runner';
 
@@ -38,6 +38,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
   const [bpm, setBpm] = useState<number | null>(null);
   const [metro, setMetro] = useState<MetronomeMode>(settings.metronomeMode);
   const [loop, setLoop] = useState<{ from: number; to: number } | null>(null);
+  const [playRepeats, setPlayRepeatsState] = useState(false);
   const [zoom, setZoom] = useState(() => (typeof window !== 'undefined' && window.innerWidth < 600 ? 0.8 : 1));
   const [ui, setUi] = useState<UiState>('idle');
   const [notice, setNotice] = useState<string | null>(null);
@@ -53,8 +54,16 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
   const stopping = useRef(false);
 
   useEffect(() => {
-    getPiece(id).then((p) => setPiece(p ?? null));
+    getPiece(id).then((p) => {
+      setPiece(p ?? null);
+      setPlayRepeatsState(p?.playRepeats ?? false);
+    });
   }, [id]);
+
+  const togglePlayRepeats = (on: boolean) => {
+    setPlayRepeatsState(on);
+    if (piece) void setPlayRepeats(piece.id, on);
+  };
 
   // Defaults from the music and from a "Fix it" link.
   useEffect(() => {
@@ -187,6 +196,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
         mode,
         bpm,
         loop: loop ? { fromIndex: loop.from, toIndex: loop.to } : undefined,
+        playRepeats,
         metronomeMode: metro,
         metronomeVolume: settings.metronomeVolume,
         latencyMs: settings.latencyMs,
@@ -230,7 +240,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
         );
       } else setNotice(t.errors.generic);
     }
-  }, [score, bpm, settings, showFirstRun, instrument, difficulty, mode, loop, metro, stop]);
+  }, [score, bpm, settings, showFirstRun, instrument, difficulty, mode, loop, playRepeats, metro, stop]);
 
   const active = ui === 'running' || ui === 'countin';
   const busy = ui === 'preparing' || ui === 'loadingPiano' || ui === 'analysing';
@@ -400,6 +410,17 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
               ))}
             </div>
           </fieldset>
+
+          {hasRepeats(measures) && (
+            <fieldset className="control-group" disabled={active || busy}>
+              <legend>{t.practice.repeats}</legend>
+              <label className="row" style={{ gap: 8 }}>
+                <input type="checkbox" role="switch" checked={playRepeats} onChange={(e) => togglePlayRepeats(e.target.checked)} data-testid="play-repeats" />
+                <span>{t.practice.playRepeats}</span>
+              </label>
+              {!playRepeats && <p className="muted small">{t.practice.repeatsHelp}</p>}
+            </fieldset>
+          )}
 
           <fieldset className="control-group" disabled={active || busy}>
             <legend>{t.practice.loop}</legend>

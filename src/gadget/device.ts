@@ -155,9 +155,10 @@ export class GadgetListener {
     return this.engine !== null;
   }
 
-  async start(opts: { range: { low: number; high: number }; latencyMs?: number; noiseFloor?: number }) {
+  /** `rawMic`: no echo cancelling, noise suppression or auto gain (the tuner, when no metronome is playing). */
+  async start(opts: { range: { low: number; high: number }; latencyMs?: number; noiseFloor?: number; rawMic?: boolean }) {
     this.stop();
-    const mic = new MicInput(this.ctx);
+    const mic = new MicInput(this.ctx, !opts.rawMic);
     await mic.start();
     this.mic = mic;
     this.engine = new MonoEngine({

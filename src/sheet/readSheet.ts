@@ -57,9 +57,9 @@ export async function readSheetMusic(
   const result = await readPrepared(pages, {
     instrument,
     rpm,
-    linesPerRequest: info?.linesPerRequest ?? 3,
-    checkRounds: info?.checkRounds ?? 2,
-    parallel: info?.parallel ?? 3,
+    linesPerRequest: info?.linesPerRequest ?? 4,
+    checkRounds: info?.checkRounds ?? 0,
+    parallel: info?.parallel ?? 2,
     onProgress,
     onLine,
     send: (req, onBars) => callReader(req, { instrument, onBars, timeoutMs }),

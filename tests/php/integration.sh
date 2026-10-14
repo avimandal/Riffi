@@ -87,13 +87,13 @@ ELAPSED=$(( $(date +%s) - START ))
 echo "  ok   deadline: a hung provider becomes 'timeout' after ${ELAPSED}s, with keep-alive pings meanwhile"
 
 # --- Clear error codes ---
-for case in "busy:busy" "missing:model_not_found" "badkey:bad_key"; do
+for case in "busy:ai_rate_limit" "missing:model_not_found" "badkey:bad_key"; do
   name=${case%%:*}; code=${case##*:}; port_var="PORT_$name"
   OUT=$(scan ${!port_var})
   [ "$(last_line "$OUT" | field code)" = "$code" ] || fail "$name: expected $code, got $(last_line "$OUT")"
   [ -n "$(last_line "$OUT" | field ref)" ] || fail "$name: no reference code"
 done
-echo "  ok   errors: free-tier 429 → busy, 404 → model_not_found, bad key → bad_key (each with a ref)"
+echo "  ok   errors: free-tier 429 → ai_rate_limit, 404 → model_not_found, bad key → bad_key (each with a ref)"
 
 OUT=$(scan $PORT_oldthink)
 [ "$(last_line "$OUT" | field type)" = "result" ] || fail "oldthink: expected a result after dropping thinkingLevel: $OUT"
@@ -148,19 +148,19 @@ echo "  ok   check: photos + engravings + transcriptions + code problems, severa
 for i in 1 2; do OUT=$(step $PORT_pace line -F "$IMG"); [ "$(echo "$OUT" | tail -1)" = "200" ] || fail "pace: request $i should go through"; done
 OUT=$(step $PORT_pace line -F "$IMG")
 [ "$(echo "$OUT" | tail -1)" = "429" ] || fail "pace: third request in a minute should wait: $OUT"
-[ "$(echo "$OUT" | head -1 | field code)" = "busy" ] && [ "$(echo "$OUT" | head -1 | field retry_after)" -gt 0 ] || fail "pace: expected busy with retry_after: $OUT"
+[ "$(echo "$OUT" | head -1 | field code)" = "pace" ] && [ "$(echo "$OUT" | head -1 | field retry_after)" -gt 0 ] || fail "pace: expected pace with retry_after: $OUT"
 OUT=$(step $PORT_perminute line -F "$IMG")
-[ "$(last_line "$OUT" | field code)" = "busy" ] && [ "$(last_line "$OUT" | field retry_after)" = "7" ] || fail "per-minute 429 should pass on Gemini's retryDelay: $OUT"
+[ "$(last_line "$OUT" | field code)" = "ai_rate_limit" ] && [ "$(last_line "$OUT" | field retry_after)" = "7" ] || fail "per-minute 429 should be ai_rate_limit with Gemini's retryDelay: $OUT"
 OUT=$(step $PORT_daily line -F "$IMG")
 [ "$(last_line "$OUT" | field code)" = "quota" ] || fail "daily 429 should be 'quota': $OUT"
-echo "  ok   pace: GEMINI_RPM spaces requests (busy + retry_after); Gemini's retryDelay passed on; daily quota → quota"
+echo "  ok   pace: GEMINI_RPM spaces requests (pace + retry_after); Gemini's 429 → ai_rate_limit with its retryDelay; daily quota → quota"
 
 # --- The site-wide music reader: only changed with the admin password ---
 last_provider() { grep '"event":"scan_start"' "$TMP/logs/$1.log" | tail -1 | field provider; }
 OUT=$(curl -s -N -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' -F 'instrument=violin' -F provider=claude -F "$IMG" "http://127.0.0.1:$PORT_admin/omr.php")
 [ "$(last_line "$OUT" | field type)" = "result" ] && [ "$(last_provider admin)" = "gemini" ] || fail "the app must not be able to choose the provider: $OUT"
 INFO=$(curl -s "http://127.0.0.1:$PORT_admin/omr.php?info=1")
-[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field provider)" = "gemini" ] && [ "$(echo "$INFO" | field can_change)" = "1" ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] && [ "$(echo "$INFO" | field lines_per_request)" = "3" ] && [ "$(echo "$INFO" | field check_rounds)" = "2" ] || fail "info: $INFO"
+[ "$(echo "$INFO" | field providers)" = '["gemini","claude"]' ] && [ "$(echo "$INFO" | field provider)" = "gemini" ] && [ "$(echo "$INFO" | field can_change)" = "1" ] && [ "$(echo "$INFO" | field rpm.gemini)" = "8" ] && [ "$(echo "$INFO" | field lines_per_request)" = "4" ] && [ "$(echo "$INFO" | field check_rounds)" = "0" ] || fail "info: $INFO"
 ! echo "$INFO" | grep -q 'AIza\|sk-ant\|sesame' || fail "info leaked a secret"
 [ "$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1" | field can_change)" = "" ] || fail "no ADMIN_PASSWORD should mean no Change button"
 admin() { curl -s -w '\n%{http_code}' -H 'Origin: https://riffi.example.com' "$@" "http://127.0.0.1:$PORT_admin/omr.php?admin=1"; }
@@ -190,7 +190,7 @@ echo "  ok   music reader: the app can't choose; the admin password changes it s
 
 # --- Private log: useful, and never contains the key ---
 grep -q '"event":"scan_ok"' "$TMP/logs/ok.log" || fail "no scan_ok in the log"
-grep -q '"code":"busy"' "$TMP/logs/busy.log" || fail "busy not logged"
+grep -q '"code":"ai_rate_limit"' "$TMP/logs/busy.log" || fail "rate limit not logged"
 grep -q 'quota' "$TMP/logs/busy.log" || fail "provider message not logged"
 grep -q '"code":"timeout"' "$TMP/logs/slow.log" || fail "timeout not logged"
 grep -q 'max_execution_time' "$TMP/logs/ok.log" || fail "PHP limits not logged"
@@ -216,7 +216,7 @@ grep '"event":"read_timings"' "$TMP/logs/fast.log" | grep -q '"code":"timeout"' 
 REPORT=$(last_line "$(curl -s -N "http://127.0.0.1:$PORT_fast/omr.php?check=1")")
 [ "$(echo "$REPORT" | field report.timings.recent_reads.0.total_s)" = "41" ] && [ "$(echo "$REPORT" | field report.timings.requests.page.count)" -ge 1 ] || fail "self-check: timing summary: $REPORT"
 INFO=$(curl -s "http://127.0.0.1:$PORT_fast/omr.php?info=1")
-[ "$(echo "$INFO" | field parallel)" = "3" ] && [ "$(echo "$INFO" | field request_seconds)" = "60" ] || fail "info: parallel / request_seconds: $INFO"
+[ "$(echo "$INFO" | field parallel)" = "2" ] && [ "$(echo "$INFO" | field request_seconds)" = "60" ] || fail "info: parallel / request_seconds: $INFO"
 echo "  ok   timings: each request logged, the app's timings logged (sanitised), summed up in the self-check; ?info gives parallel and deadline"
 
 # --- Request guards ---
