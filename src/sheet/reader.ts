@@ -1,7 +1,7 @@
 import type { Instrument } from '../config';
 import { barLength, checkLine, type BarProblem } from './checks';
 import { callReader, isRateLimit, OmrError, type ReaderRequest, type ReaderResult } from './omrClient';
-import { headNames, lineHint } from './noteHeads';
+import { headNames, lineHint, type Head } from './noteHeads';
 import { snapToHeads } from './snap';
 import { NotationError, notationToMusicXml, parseStaff, type RnMeasure, type RnScore } from './notation';
 import { RequestPacer } from './pacer';
@@ -32,6 +32,8 @@ export interface Overview {
   key?: number | null;
   time?: string | null;
   clef?: string | null;
+  /** Clef of the lower staff of a grand staff (it can be treble too). */
+  clef2?: string | null;
   staves?: number;
   pickup?: boolean;
   pickup_notes?: string;
@@ -99,6 +101,9 @@ export interface LineTrace {
   snapped?: number[];
 }
 
+/** Key, time signature and clefs in force (clef2: lower staff of a grand staff). */
+export type LineCtx = { key?: number; time?: string; clef?: string; clef2?: string };
+
 /** Everything needed to read one line (again). */
 export interface LineJob {
   page: number;
@@ -106,14 +111,20 @@ export interface LineJob {
   line: number;
   lines: number;
   crop: Blob;
-  /** Key/time/clef in force at the start of the line (from the page overview and earlier lines). */
-  ctx: { key?: number; time?: string; clef?: string };
+  /** Key/time/clefs in force at the start of the line (from the page overview and earlier lines). */
+  ctx: LineCtx;
+  /** 2 when the line is a grand staff (two staves joined by a brace, read together, bars aligned). */
+  staves: 1 | 2;
+  /** The measured note heads per staff, so they can be named again by the clefs the reader saw. */
+  rawHeads?: Head[][];
   /** Printed number of its first bar, if the overview saw it. */
   printedFirstBar?: number;
   hint: string;
   heads: string[][];
   firstOfPiece: boolean;
   lastOfPiece: boolean;
+  /** Who it's being read for (names heads within that instrument's range). */
+  instrument?: Instrument;
   pickup?: 'yes' | 'no';
   pickupNotes?: string;
 }
@@ -173,7 +184,7 @@ export interface ReadResult {
 /** Sends one request (tests replace this). */
 export type Sender = (req: ReaderRequest, onBars?: (bars: number) => void) => Promise<ReaderResult>;
 /** Engraves one line to an image (tests replace this; the app uses OSMD). */
-export type LineRenderer = (measures: RnMeasure[], ctx: { key?: number; time?: string; clef?: string; staves: 1 | 2 }) => Promise<Blob>;
+export type LineRenderer = (measures: RnMeasure[], ctx: LineCtx & { staves: 1 | 2 }) => Promise<Blob>;
 
 export interface ReadOptions {
   instrument: Instrument;
@@ -218,13 +229,14 @@ export function normaliseLine(raw: RnMeasure[], first: number, allowPickup: bool
   return out;
 }
 
-/** The last key/time/clef set on these bars (carried to the next line). Pure. */
-export function carryForward(measures: RnMeasure[], ctx: { key?: number; time?: string; clef?: string }) {
+/** The last key/time/clefs set on these bars (carried to the next line). Pure. */
+export function carryForward(measures: RnMeasure[], ctx: LineCtx): LineCtx {
   const next = { ...ctx };
   for (const m of measures) {
     if (m.key !== undefined && Number.isInteger(m.key)) next.key = m.key;
     if (m.time) next.time = m.time;
     if (m.clef) next.clef = m.clef;
+    if (m.clef2) next.clef2 = m.clef2;
   }
   return next;
 }
@@ -261,10 +273,22 @@ interface LineState {
 
 /** Notes worth hinting for each instrument (one staff); piano hints aren't filtered. */
 const HINT_RANGE: Partial<Record<Instrument, [string, string]>> = { violin: ['G3', 'E7'], voice: ['A2', 'C6'] };
+const HINT_RANGE_FOR = (job: LineJob) => (job.instrument ? HINT_RANGE[job.instrument] : undefined);
 
 const chunks = <T>(xs: T[], n: number): T[][] => {
   const out: T[][] = [];
   for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+};
+
+/** Split lines into runs with the same number of staves (a request reads one kind). */
+const runs = (states: LineState[]): LineState[][] => {
+  const out: LineState[][] = [];
+  for (const st of states) {
+    const last = out[out.length - 1];
+    if (last && last[0].job.staves === st.job.staves) last.push(st);
+    else out.push([st]);
+  }
   return out;
 };
 
@@ -311,11 +335,30 @@ function lineFields(group: LineJob[]) {
     key: first.ctx.key,
     time: first.ctx.time,
     clef: first.ctx.clef,
+    clef2: first.staves === 2 ? first.ctx.clef2 : undefined,
+    staves: first.staves,
     first_bar: first.printedFirstBar,
     pickup: first.firstOfPiece ? first.pickup : undefined,
     pickup_notes: first.firstOfPiece ? first.pickupNotes : undefined,
     hints: JSON.stringify(group.map((g) => g.hint)),
   };
+}
+
+/**
+ * The line's measured heads as note names, by the clefs in force: the ones the
+ * reader gave on this line if any, else those carried in. Without a known clef
+ * for a grand staff's lower staff, its heads aren't used. Pure.
+ */
+/** The clefs in force on a line: the reader's own for this line, else those carried in. Pure. */
+const clefsFor = (job: LineJob, measures: RnMeasure[]): [string, string] => [measures.find((m) => m.clef)?.clef ?? job.ctx.clef ?? 'treble', measures.find((m) => m.clef2)?.clef2 ?? job.ctx.clef2 ?? 'bass'];
+
+export function headsFor(job: LineJob, measures: RnMeasure[] = []): string[][] {
+  if (!job.rawHeads) return job.heads;
+  const clef = measures.find((m) => m.clef)?.clef ?? job.ctx.clef ?? 'treble';
+  if (job.staves === 1) return headNames(job.rawHeads.slice(0, 1), clef, undefined, HINT_RANGE_FOR(job));
+  const clef2 = measures.find((m) => m.clef2)?.clef2 ?? job.ctx.clef2;
+  const names = headNames(job.rawHeads.slice(0, 2), clef, clef2 ?? 'treble');
+  return clef2 ? names : [names[0] ?? [], []];
 }
 
 /** Turn one line's reply into checked, snapped bars. Pure. */
@@ -325,14 +368,16 @@ function processLine(job: LineJob, r: { measures?: unknown; unsure?: unknown } |
   const seen = Number(raw.find((m) => !m.pickup && Number(m.n) > 0)?.n);
   let measures = normaliseLine(raw, job.printedFirstBar ?? (Number.isInteger(seen) ? seen : 1), job.firstOfPiece);
   if (job.firstOfPiece) measures = markPickup(measures, job.ctx.time);
+  // Name the measured heads by the clefs the reader saw on this line (a lower staff can be treble too).
+  const heads = headsFor(job, measures);
   // Pitch comes from the measured note heads; the model keeps rhythm, accidentals, ties, tuplets and bars.
-  const snapped = snapToHeads(measures, job.heads, job.ctx.key ?? 0);
+  const snapped = snapToHeads(measures, heads, job.ctx.key ?? 0, clefsFor(job, measures));
   measures = snapped.measures;
   return {
     measures,
     moved: snapped.moved,
     unsure: unsureBars(raw, measures, r?.unsure),
-    problems: checkLine(measures, { key: job.ctx.key, time: job.ctx.time, instrument, firstLine: job.firstOfPiece, lastLine: job.lastOfPiece, heads: job.heads }),
+    problems: checkLine(measures, { key: job.ctx.key, time: job.ctx.time, instrument, firstLine: job.firstOfPiece, lastLine: job.lastOfPiece, heads, staves: job.staves }),
   };
 }
 
@@ -361,7 +406,8 @@ export async function readOneLine(job: LineJob, opts: { instrument: Instrument; 
 export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Promise<ReadResult> {
   const t0 = Date.now();
   const instrument = opts.instrument;
-  const staves: 1 | 2 = instrument === 'piano' ? 2 : 1;
+  // Piano music is a grand staff; so is any line found as two staves joined by a brace.
+  const staves: 1 | 2 = instrument === 'piano' || pages.some((pg) => pg.staves?.includes(2)) ? 2 : 1;
   const send: Sender = opts.send ?? ((req, onBars) => callReader(req, { instrument, onBars }));
   const pacer = opts.pacer ?? new RequestPacer({ rpm: opts.rpm ?? 8, maxWaitMs: 20 * 60_000 });
   const rounds = Math.max(0, Math.min(2, opts.checkRounds ?? 2));
@@ -441,15 +487,18 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
 
   // 2. Every line, with the context the overviews give (key, time, clef, printed bar numbers).
   const all: LineState[] = [];
-  const ctx: { key?: number; time?: string; clef?: string } = {};
+  const ctx: LineCtx = {};
   pages.forEach((page, p) => {
     const ov = overviews[p] ?? {};
     if (ov.key !== null && ov.key !== undefined && (p === 0 || ctx.key === undefined)) ctx.key = ov.key;
     if (ov.time && (p === 0 || !ctx.time)) ctx.time = ov.time;
     if (ov.clef && !ctx.clef) ctx.clef = ov.clef;
+    if (ov.clef2 && !ctx.clef2) ctx.clef2 = ov.clef2;
     const clef = ctx.clef ?? 'treble';
     page.lines.forEach((blob, l) => {
       const printed = ov.first_bars?.[l];
+      const lineStaves: 1 | 2 = page.staves?.[l] ?? (page.heads?.[l]?.length === 2 ? 2 : staves === 2 && page.detected === false ? 2 : 1);
+      const raw = page.heads?.[l];
       const job: LineJob = {
         page: p + 1,
         pages: pages.length,
@@ -458,13 +507,18 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
         crop: blob,
         ctx: { ...ctx },
         printedFirstBar: typeof printed === 'number' && printed >= 0 ? printed : p === 0 && l === 0 ? 1 : undefined,
-        hint: lineHint(page.heads?.[l], clef, 'bass', HINT_RANGE[instrument]),
-        heads: headNames(page.heads?.[l], clef, 'bass', HINT_RANGE[instrument]),
+        staves: lineStaves,
+        rawHeads: raw,
+        instrument,
+        // A grand staff's lower staff is only named when its clef is known (it can be treble).
+        hint: lineHint(raw, clef, ctx.clef2, HINT_RANGE[instrument]),
+        heads: [],
         firstOfPiece: p === 0 && l === 0,
         lastOfPiece: p === pages.length - 1 && l === page.lines.length - 1,
         pickup: p === 0 && l === 0 ? (ov.pickup === true ? 'yes' : ov.pickup === false ? 'no' : undefined) : undefined,
         pickupNotes: p === 0 && l === 0 ? ov.pickup_notes : undefined,
       };
+      job.heads = headsFor(job);
       all.push({
         job,
         status: 'waiting',
@@ -568,7 +622,7 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
   };
 
   report();
-  await Promise.all(pages.map((_, p) => chunks(all.filter((st) => st.job.page === p + 1), per)).flat().map((g) => readWithRetry(g)));
+  await Promise.all(pages.map((_, p) => runs(all.filter((st) => st.job.page === p + 1)).flatMap((run) => chunks(run, per))).flat().map((g) => readWithRetry(g)));
   for (const st of all) if (st.status !== 'done') st.status = 'failed';
 
   // Nothing read at all: there is nothing to show, so say why.
@@ -579,14 +633,14 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
   }
 
   // 3. In order now: a key or time change on one line carries to the next, so re-check lines that started differently.
-  let carried: { key?: number; time?: string; clef?: string } = { ...(all[0]?.job.ctx ?? {}) };
+  let carried: LineCtx = { ...(all[0]?.job.ctx ?? {}) };
   for (const st of all) {
     if (st.status !== 'done') continue;
     const was = st.job.ctx;
-    const now = { key: carried.key ?? was.key, time: carried.time ?? was.time, clef: carried.clef ?? was.clef };
+    const now = { key: carried.key ?? was.key, time: carried.time ?? was.time, clef: carried.clef ?? was.clef, clef2: carried.clef2 ?? was.clef2 };
     if (now.key !== was.key || now.time !== was.time) {
       st.job = { ...st.job, ctx: now };
-      st.problems = checkLine(st.measures, { key: now.key, time: now.time, instrument, firstLine: st.job.firstOfPiece, lastLine: st.job.lastOfPiece, heads: st.job.heads });
+      st.problems = checkLine(st.measures, { key: now.key, time: now.time, instrument, firstLine: st.job.firstOfPiece, lastLine: st.job.lastOfPiece, heads: headsFor(st.job, st.measures), staves: st.job.staves });
     }
     carried = carryForward(st.measures, now);
   }
@@ -597,7 +651,7 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
   for (let round = 1; round <= rounds && !fatal; round++) {
     const pending = all.filter((st) => st.status === 'done' && st.pending && st.measures.length > 0);
     if (pending.length === 0) break;
-    await Promise.all(chunks(pending, perCheck).map((group) => limit(() => checkGroup(group, round))));
+    await Promise.all(runs(pending).flatMap((run) => chunks(run, perCheck)).map((group) => limit(() => checkGroup(group, round))));
   }
 
   async function checkGroup(group: LineState[], round: number) {
@@ -606,7 +660,7 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
       const started = Date.now();
       try {
         if (!opts.render) throw new Error('no renderer');
-        ready.push({ st, image: await opts.render(st.measures, { key: st.job.ctx.key, time: st.job.ctx.time, clef: st.job.ctx.clef, staves }) });
+        ready.push({ st, image: await opts.render(st.measures, { key: st.job.ctx.key, time: st.job.ctx.time, clef: st.job.ctx.clef, clef2: st.job.ctx.clef2, staves: st.job.staves }) });
       } catch (e) {
         st.trace.checkSkipped = `couldn't engrave the line (${(e as Error).message})`;
         st.pending = false;
@@ -631,6 +685,7 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
             line_numbers: JSON.stringify(ready.map((r) => r.st.job.line)),
             key: first.ctx.key,
             time: first.ctx.time,
+            staves: first.staves,
             round,
             transcriptions: JSON.stringify(ready.map((r) => ({ measures: r.st.measures }))),
             problems: JSON.stringify(ready.map((r) => r.st.problems.map((x) => x.message))),
@@ -671,10 +726,11 @@ export async function readPrepared(pages: PreparedPage[], opts: ReadOptions): Pr
     const firstBar = Number(st.measures.find((m) => !m.pickup)?.n ?? st.job.printedFirstBar ?? 1);
     let corrected = normaliseLine(asArray<RnMeasure>(c.measures), firstBar, st.job.firstOfPiece);
     if (st.job.firstOfPiece) corrected = markPickup(corrected, st.job.ctx.time);
-    const snapped = snapToHeads(corrected, st.job.heads, st.job.ctx.key ?? 0);
+    const heads = headsFor(st.job, corrected);
+    const snapped = snapToHeads(corrected, heads, st.job.ctx.key ?? 0, clefsFor(st.job, corrected));
     corrected = snapped.measures;
     st.trace.snapped?.push(snapped.moved);
-    const newProblems = checkLine(corrected, { key: st.job.ctx.key, time: st.job.ctx.time, instrument, firstLine: st.job.firstOfPiece, lastLine: st.job.lastOfPiece, heads: st.job.heads });
+    const newProblems = checkLine(corrected, { key: st.job.ctx.key, time: st.job.ctx.time, instrument, firstLine: st.job.firstOfPiece, lastLine: st.job.lastOfPiece, heads, staves: st.job.staves });
     // Take the correction unless it breaks more bars than it fixes.
     const accepted = newProblems.length <= st.problems.length || corrected.length === st.measures.length;
     st.trace.rounds.push({ mismatches, measures: corrected, problems: newProblems, accepted });
@@ -758,7 +814,13 @@ function pieceFrom(lines: RnMeasure[][], overviews: Overview[], staves: 1 | 2, w
   if (measures.length === 0) throw new OmrError('unreadable', undefined, 'no_measures');
   const firstKey = measures.find((m) => m.key !== undefined)?.key ?? overviews[0]?.key ?? 0;
   const firstTime = measures.find((m) => m.time)?.time ?? overviews[0]?.time ?? '4/4';
-  measures[0] = { ...measures[0], key: measures[0].key ?? firstKey ?? 0, time: measures[0].time ?? firstTime, clef: measures[0].clef ?? overviews[0]?.clef ?? (staves === 2 ? 'treble' : undefined) };
+  measures[0] = {
+    ...measures[0],
+    key: measures[0].key ?? firstKey ?? 0,
+    time: measures[0].time ?? firstTime,
+    clef: measures[0].clef ?? overviews[0]?.clef ?? (staves === 2 ? 'treble' : undefined),
+    ...(staves === 2 ? { clef2: measures.find((m) => m.clef2)?.clef2 ?? overviews[0]?.clef2 ?? 'bass' } : {}),
+  };
   return {
     ov0,
     score: {

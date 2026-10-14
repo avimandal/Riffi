@@ -28,6 +28,8 @@ export interface LineContext {
   lastLine?: boolean;
   /** Note heads measured on the photo: natural names per staff, left to right. */
   heads?: string[][];
+  /** 2 for a grand staff: every bar needs both staves, and they must add up to the same length. */
+  staves?: 1 | 2;
 }
 
 /** Lowest and highest MIDI notes we expect for each instrument. */
@@ -124,6 +126,8 @@ export function checkLine(measures: RnMeasure[], ctx: LineContext): BarProblem[]
     if (i === 0 && time === undefined) problems.push({ n, kind: 'time', message: `Bar ${n}: no time signature was given.` });
 
     const want = barLength(time);
+    const lengths: Partial<Record<'s1' | 's2', number>> = {};
+    if (ctx.staves === 2 && m.s1 !== undefined && m.s2 === undefined) problems.push({ n, kind: 'duration', message: `Bar ${n}: the lower staff is missing (both staves of a grand staff share every bar).` });
     for (const staff of ['s1', 's2'] as const) {
       const src = m[staff];
       if (src === undefined) continue;
@@ -138,6 +142,7 @@ export function checkLine(measures: RnMeasure[], ctx: LineContext): BarProblem[]
       // Duration.
       if (!events.some((e) => e.kind === 'barRest')) {
         const got = events.reduce((sum, e) => sum + e.quarters, 0);
+        lengths[staff] = got;
         const firstBar = ctx.firstLine && i === 0;
         const lastBar = ctx.lastLine && i === measures.length - 1;
         const short = got < want - 1e-6;
@@ -149,8 +154,9 @@ export function checkLine(measures: RnMeasure[], ctx: LineContext): BarProblem[]
         const misses = keyMisses(src, key);
         if (misses.length) problems.push({ n, kind: 'key', message: `Bar ${n}${where}: ${[...new Set(misses)].join(', ')} ${misses.length === 1 ? 'has' : 'have'} no sharp or flat, but the key signature (${keyName(key)}) changes ${misses.length === 1 ? 'it' : 'them'}. Write the sounding pitch, or "n" for a printed natural.` });
       }
-      // Range (piano: each staff can go anywhere on the keyboard).
-      const out = events.flatMap((e) => e.pitches).map(midiOf).filter((p) => p < lo || p > hi);
+      // Range (piano: each staff can go anywhere on the keyboard; so can a grand staff's accompaniment).
+      const [rlo, rhi] = staff === 's2' && ctx.staves === 2 ? RANGE.piano : [lo, hi];
+      const out = events.flatMap((e) => e.pitches).map(midiOf).filter((p) => p < rlo || p > rhi);
       if (out.length) problems.push({ n, kind: 'range', message: `Bar ${n}${where}: ${out.length === 1 ? 'a note is' : `${out.length} notes are`} outside the ${ctx.instrument === 'voice' ? 'singing' : ctx.instrument} range (check the octave or ledger lines).` });
       // Tuplets.
       const { groups, unclosed } = tupletGroups(src);
@@ -158,6 +164,10 @@ export function checkLine(measures: RnMeasure[], ctx: LineContext): BarProblem[]
       for (const g of groups) {
         if (g.count !== g.actual) problems.push({ n, kind: 'tuplet', message: `Bar ${n}${where}: a ${g.actual}-tuplet has ${g.count} ${g.count === 1 ? 'note' : 'notes'} in it.` });
       }
+    }
+    // Both staves of a bar are played together, so they last the same time.
+    if (lengths.s1 !== undefined && lengths.s2 !== undefined && Math.abs(lengths.s1 - lengths.s2) > 1e-6) {
+      problems.push({ n, kind: 'duration', message: `Bar ${n}: the upper staff adds up to ${fmtBeats(lengths.s1)} but the lower staff to ${fmtBeats(lengths.s2)}; both hands share the bar.` });
     }
   });
   if (ctx.heads) problems.push(...checkAgainstHeads(measures, ctx.heads));

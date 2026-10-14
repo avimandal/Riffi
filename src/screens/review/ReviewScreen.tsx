@@ -258,7 +258,7 @@ export default function ReviewScreen({ id, query }: { id: string; query?: URLSea
     let flags = source.flags;
     const fresh: { index: number; reasons: string[] }[] = [];
     for (const g of [...got].sort((a, b) => order(b.f) - order(a.f))) {
-      const { xml: next, count } = insertLine(cur, g.f.at, g.measures, g.f.job.ctx, source.instrument);
+      const { xml: next, count } = insertLine(cur, g.f.at, g.measures, g.f.job.ctx, source.instrument, g.f.job.staves);
       const at = g.f.at;
       cur = next;
       left = left.filter((x) => x !== g.f).map((x) => (order(x) > order(g.f) ? { ...x, at: x.at + count } : x));

@@ -17,6 +17,9 @@ export interface Head {
 
 const LETTERS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
 
+/** A head's core is at most this many times wider than tall; flatter blobs are beam pieces. */
+export const HEAD_MAX_FLATNESS = 2.2;
+
 /** Bottom-line note for each clef, as a diatonic number (C4 = 28). */
 const BOTTOM: Record<string, number> = { treble: 4 * 7 + 2, bass: 2 * 7 + 4, alto: 3 * 7 + 3, tenor: 3 * 7 + 1 };
 
@@ -114,6 +117,8 @@ export function findHeads(gray: ArrayLike<number>, width: number, height: number
     const h = maxY - minY + 1;
     // A head's core is about a space tall at most and wider than tall-ish; beams are long, dots tiny.
     if (h < Math.max(2, 0.2 * sp) || w < Math.max(3, 0.35 * sp) || h > 1.2 * sp || w > 1.8 * sp) continue;
+    // A flat piece of a beam between two close stems (heads are round-ish).
+    if (w > HEAD_MAX_FLATNESS * h) continue;
     const cx = sx / n;
     const cy = sy / n;
     // Nearest staff, within ledger-line reach.
@@ -131,12 +136,60 @@ export function findHeads(gray: ArrayLike<number>, width: number, height: number
     const s = staves[best];
     // Skip the clef, key and time signature at the start of the staff.
     if (cx < s.x0 + 4 * s.spacing) continue;
-    const step = Math.round((topAt(s, cx) + 4 * s.spacing - cy) / (s.spacing / 2));
+    const step = Math.round((localTop(gray, width, height, s, cx) + 4 * s.spacing - cy) / (s.spacing / 2));
     if (step < -7 || step > 15) continue;
     out[best].push({ x: cx, step });
   }
   for (const list of out) list.sort((a, b) => a.x - b.x || a.step - b.step);
   return out;
+}
+
+/**
+ * Where the staff's top line really is near `x`. The staff's fitted curve can be
+ * half a space out where a page curls; the lines themselves are right there. Takes
+ * the median brightness of the columns either side of the head (so stems, beams and
+ * other heads drop out, the five lines stay) and slides the five lines up or down
+ * by up to half a space to where they're darkest. Pure.
+ */
+function localTop(gray: ArrayLike<number>, width: number, height: number, s: Staff, x: number): number {
+  const sp = s.spacing;
+  const top = topAt(s, x);
+  const y0 = Math.max(0, Math.floor(top - sp));
+  const y1 = Math.min(height - 1, Math.ceil(top + 5 * sp));
+  const cols: number[] = [];
+  // Columns 1.2–4.5 spaces either side (measured best on the piano fixture photo).
+  for (let dx = Math.round(1.2 * sp); dx <= Math.round(4.5 * sp); dx++) cols.push(Math.round(x - dx), Math.round(x + dx));
+  // Only where the staff is (past its ends there are no lines to find).
+  const xs = cols.filter((c) => c >= Math.max(0, s.x0) && c < Math.min(width, s.x1 + 2 * sp));
+  if (xs.length < 4 || y1 - y0 < 4 * sp) return top;
+  const profile = new Float32Array(y1 - y0 + 1);
+  const vals: number[] = [];
+  for (let y = y0; y <= y1; y++) {
+    vals.length = 0;
+    for (const c of xs) vals.push(gray[y * width + c]);
+    vals.sort((a, b) => a - b);
+    profile[y - y0] = vals[vals.length >> 1];
+  }
+  const at = (y: number) => {
+    const i = y - y0;
+    const k = Math.floor(i);
+    if (k < 0 || k + 1 >= profile.length) return 255;
+    return profile[k] + (profile[k + 1] - profile[k]) * (i - k);
+  };
+  let best = 0;
+  let bestDark = Infinity;
+  const reach = Math.round(0.6 * sp);
+  for (let d = -reach; d <= reach; d += 0.5) {
+    let sum = 0;
+    for (let l = 0; l < 5; l++) sum += at(top + d + l * sp);
+    // Prefer staying put when it's a near tie.
+    const score = sum + Math.abs(d) * 0.5;
+    if (score < bestDark) {
+      bestDark = score;
+      best = d;
+    }
+  }
+  return top + best;
 }
 
 /** Hint text for the reader: natural note names, left to right; heads at the same x are a chord. Pure. */
