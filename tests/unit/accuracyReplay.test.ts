@@ -28,7 +28,7 @@ describe('recorded runs of the real music reader', () => {
       const pages = rec.lines.map((n, p) => ({ context: new Blob(['page']), lines: Array.from({ length: n }, () => new Blob(['line'])), heads: rec.heads?.[p], detected: true }));
       const result = await readPrepared(pages, {
         instrument: rec.instrument,
-        send: replayer(rec),
+        send: replayer(rec, { skipErrors: true }),
         render: async () => new Blob(['png']),
         pacer: new RequestPacer({ rpm: 1000, now: () => 0, sleep: async () => undefined }),
       });

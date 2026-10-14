@@ -27,6 +27,9 @@ const outDir = process.env.RIFFI_LIVE_OUT ?? join(sheets, 'recordings');
 const PORT = 8899;
 
 const provider = process.env.RIFFI_PROVIDER ?? 'gemini';
+/** Hard cap on requests that reach the AI (free-tier keys allow only a few a day). Over it, the app gets a quota error. */
+const maxRequests = Number(process.env.RIFFI_MAX_REQUESTS ?? Infinity);
+let aiRequests = 0;
 const haveKey = provider === 'claude' ? !!process.env.ANTHROPIC_API_KEY : !!process.env.GEMINI_API_KEY;
 
 let php: ChildProcess | null = null;
@@ -48,7 +51,7 @@ test.beforeAll(async () => {
   'LINES_PER_REQUEST' => (int) (getenv('LINES_PER_REQUEST') ?: 3),
   'PARALLEL_REQUESTS' => (int) (getenv('PARALLEL_REQUESTS') ?: 3),
   'CHECK_ROUNDS' => getenv('CHECK_ROUNDS') !== false ? (int) getenv('CHECK_ROUNDS') : 2,
-  'REQUEST_SECONDS' => 60,
+  'REQUEST_SECONDS' => (int) (getenv('REQUEST_SECONDS') ?: 60),
   'ALLOWED_ORIGIN' => 'http://localhost:5174',
   'RATE_LIMIT_DIR' => '${tmp}/rl',
   'LOG_FILE' => '${tmp}/omr.log',
@@ -78,6 +81,11 @@ for (const file of fixtures) {
       const req = route.request();
       const url = new URL(req.url());
       const t0 = Date.now();
+      if (req.method() === 'POST' && ++aiRequests > maxRequests) {
+        console.log(`  (request budget of ${maxRequests} used up: refused without asking the AI)`);
+        await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'Request budget used up.', code: 'quota' }) });
+        return;
+      }
       const res = await route.fetch({ url: `http://127.0.0.1:${PORT}/omr.php${url.search}`, timeout: 150_000 });
       const body = await res.text();
       const ms = Date.now() - t0;
@@ -86,7 +94,7 @@ for (const file of fixtures) {
         const field = (k: string) => form.match(new RegExp(`name="${k.replace(/[[\]]/g, '\\$&')}"\\r\\n\\r\\n([^\\r]*)`))?.[1];
         recorded.push({ mode: field('mode') ?? '', page: Number(field('page') ?? 1), line: field('line') ? Number(field('line')) : null, round: field('round') ? Number(field('round')) : null, body, ms });
         const last = body.trim().split('\n').pop() ?? '';
-        console.log(`  ${field('mode')}${field('line') ? ` line ${field('line')}` : ''}${field('round') ? ` round ${field('round')}` : ''}: ${last.slice(0, 160)}`);
+        console.log(`  ${field('mode')}${field('line') ? ` line ${field('line')}` : ''}${field('round') ? ` round ${field('round')}` : ''} (${(ms / 1000).toFixed(1)} s): ${last.slice(0, 160)}`);
       }
       await route.fulfill({ status: res.status(), headers: res.headers(), body });
     });
@@ -101,16 +109,17 @@ for (const file of fixtures) {
         const { readSheetMusic } = (await import(/* @vite-ignore */ path)) as typeof import('../../src/sheet/readSheet');
         const blob = await (await fetch(`/__fixture/${file}`)).blob();
         const r = await readSheetMusic([{ id: 'p1', file: blob, previewUrl: '', rotation: 0 }], instrument as 'violin');
-        return { score: r.score, flags: r.flags, trace: r.trace, lines: r.pages.map((p) => p.lines.length), heads: r.pages.map((p) => p.heads ?? []) };
+        return { score: r.score, flags: r.flags, trace: r.trace, lines: r.pages.map((p) => p.lines.length), heads: r.pages.map((p) => p.heads ?? []), failed: r.failed.map((f) => ({ page: f.page, line: f.line, kind: f.kind, code: f.code })), timings: r.timings };
       },
       { file, instrument },
-    )) as Pick<ReadResult, 'score' | 'flags' | 'trace'> & { lines: number[]; heads: unknown[] };
+    )) as Pick<ReadResult, 'score' | 'flags' | 'trace' | 'timings'> & { lines: number[]; heads: unknown[]; failed: { page: number; line: number; kind: string; code?: string }[] };
     const seconds = Math.round((Date.now() - started) / 1000);
 
     const final = compareScores(result.score, ref);
     const first = compareScores(firstReadScore(result.score, result.trace.lines), ref);
     const summary = (r: AccuracyReport) => ({ pitch: r.pitch, rhythm: r.rhythm, lengths: r.lengths, key: r.key.ok, time: r.time.ok, pickup: r.pickup.ok, bars: r.barsFound });
     console.log(`\n${file} (${result.lines.join('+')} lines, ${recorded.length} requests, ${seconds} s)`);
+    console.log(`lines read ${result.timings.lines_read}/${result.timings.lines}, failed: ${JSON.stringify(result.failed)}, retries ${result.timings.retries}, waited ${Math.round(result.timings.wait_ms / 1000)} s`);
     console.log(formatReport(first, 'FIRST READ: '));
     console.log(formatReport(final, 'AFTER CHECK: '));
 

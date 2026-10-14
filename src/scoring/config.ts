@@ -68,6 +68,14 @@ export const SCORING = {
     windowBehind: 4,
     windowAhead: 14,
     chordGroupMs: 60,
+    /** The cursor only moves on a match at least this good (pitch cost, 0..1: 0.5 = half a semitone off). */
+    confidentPitch: 0.5,
+    /** Skipping a note the player's tempo says is already past (missed) costs this instead of skipCost… */
+    passedSkipCost: 0.15,
+    /** …once it's this far in the past (ms; at least half a beat). */
+    passedMinMs: 150,
+    /** Recent confident matches used to learn the player's own tempo. */
+    tempoAnchors: 8,
   },
 } as const;
 

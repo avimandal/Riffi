@@ -11,7 +11,9 @@ export interface OmrResult {
  * - offline: no internet
  * - tooBig: the photo is over the upload limit
  * - rateLimited: Riffi's own hourly limit
- * - busy: the AI provider's limit (e.g. Gemini free tier) or it's overloaded
+ * - busy: the AI provider's per-minute limit (code ai_rate_limit: never retried
+ *   automatically), it's overloaded (busy), or the server's own pacing (pace:
+ *   nothing was sent to the AI yet, so the app waits its turn)
  * - quota: the provider's daily free allowance is used up
  * - timeout: the page took too long (deadline, or Cloudflare's 100 s limit)
  * - notConfigured: the server has no key / config
@@ -56,10 +58,17 @@ export interface OmrProgress {
   bars: number;
 }
 
+/** The AI said it's had too many requests (per minute, or for the day): don't send it again by itself. */
+export function isRateLimit(e: unknown): boolean {
+  return e instanceof OmrError && (e.code === 'ai_rate_limit' || e.kind === 'quota' || e.kind === 'rateLimited');
+}
+
 /** Map a server error code to a category. Pure. */
 export function kindForCode(code: string | undefined): OmrErrorKind {
   switch (code) {
     case 'busy':
+    case 'pace':
+    case 'ai_rate_limit':
       return 'busy';
     case 'quota':
       return 'quota';
@@ -244,9 +253,9 @@ export async function readerInfo(fetchImpl: typeof fetch = fetch): Promise<Reade
       provider: j.provider ?? j.default ?? null,
       canChange: j.can_change === true,
       rpm: j.rpm ?? {},
-      linesPerRequest: per > 0 ? per : 3,
-      checkRounds: Number.isFinite(rounds) && j.check_rounds !== undefined ? Math.max(0, Math.min(2, rounds)) : 2,
-      parallel: Number(j.parallel) > 0 ? Math.min(6, Number(j.parallel)) : 3,
+      linesPerRequest: per > 0 ? per : 4,
+      checkRounds: Number.isFinite(rounds) && j.check_rounds !== undefined ? Math.max(0, Math.min(2, rounds)) : 0,
+      parallel: Number(j.parallel) > 0 ? Math.min(6, Number(j.parallel)) : 2,
       requestSeconds: Number(j.request_seconds) > 0 ? Number(j.request_seconds) : 85,
     };
   } catch {

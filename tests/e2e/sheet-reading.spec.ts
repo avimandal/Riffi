@@ -58,7 +58,7 @@ test('reads a photographed page line by line, double-checks, and flags bars to l
   const timings: string[] = [];
   await page.route('**/api/omr.php**', async (route) => {
     const req = route.request();
-    if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], default: 'gemini', rpm: { gemini: 100 }, lines_per_request: 3 }) });
+    if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], default: 'gemini', rpm: { gemini: 100 }, lines_per_request: 3, check_rounds: 2, parallel: 3 }) });
     if (req.url().includes('timings=1')) {
       timings.push(parseForm(req).fields.timings);
       return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
@@ -189,6 +189,39 @@ test("the instrument defaults to the kid's own, even after a reload", async ({ p
   await page.reload();
   await expect(page.getByRole('button', { name: 'Singing' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Piano' })).toHaveAttribute('aria-pressed', 'false');
+});
+
+test("the free tier's daily limit mid-read: what was read is kept, the limit is said plainly, and nothing is retried", async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const asked: string[] = [];
+  await page.route('**/api/omr.php**', async (route) => {
+    const req = route.request();
+    if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], provider: 'gemini', rpm: { gemini: 100 }, lines_per_request: 1, check_rounds: 0, parallel: 1, request_seconds: 60 }) });
+    if (req.url().includes('timings=1')) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    const form = parseForm(req);
+    asked.push(`${form.fields.mode}${form.fields.line ?? ''}`);
+    if (form.fields.mode === 'overview') {
+      return route.fulfill(ndjson({ type: 'start', ref: 'ov0003' }, { type: 'result', overview: { title: "Herman's hornpipe", key: 2, time: '4/4', pickup: true, pickup_notes: 'A5e', lines: 7 }, provider: 'gemini', ref: 'ov0003' }));
+    }
+    const first = Number(form.fields.line);
+    // The day's free reading runs out after line 3.
+    if (first > 3) return route.fulfill(ndjson({ type: 'start', ref: 'qq0004' }, { type: 'error', code: 'quota', message: "The music reader has used up today's free reading.", ref: 'qq0004' }));
+    return route.fulfill(ndjson({ type: 'start', ref: 'ln0003' }, { type: 'result', line: { lines: [{ line: first, measures: lineBars(first), unsure: [] }] }, provider: 'gemini', ref: 'ln0003' }));
+  });
+
+  await newKid(page, 'Ada');
+  await page.getByTestId('add-music').click();
+  await page.getByTestId('photo-input').setInputFiles(photo);
+  await page.getByRole('button', { name: 'Read my music' }).click();
+  await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible({ timeout: 90_000 });
+  const panel = page.getByTestId('failed-lines');
+  await expect(panel).toContainText("4 lines couldn't be read");
+  await expect(panel.getByTestId('daily-limit')).toContainText("used up today's free reading");
+  await expect(page.getByTestId('sheet')).toHaveAttribute('data-rendered', 'true', { timeout: 20_000 });
+  // One try per line up to the limit, then nothing more: no retries.
+  expect(asked).toEqual(['overview', 'line1', 'line2', 'line3', 'line4']);
+  expect(errors).toEqual([]);
 });
 
 test('a line that times out never sinks the page: the rest is kept, and the missing lines can be read again', async ({ page }) => {

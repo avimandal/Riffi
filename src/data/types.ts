@@ -29,6 +29,8 @@ export interface Piece {
   reader?: string;
   /** When the music was changed after it was first saved. */
   editedAt?: number[];
+  /** Practice follows the repeat signs (off unless chosen on the Practice screen). */
+  playRepeats?: boolean;
   createdAt: number;
   updatedAt: number;
 }

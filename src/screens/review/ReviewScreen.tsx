@@ -29,6 +29,7 @@ import { countPitchedNotes, keyName, noteName, parseMusicXml, parseXmlDocument, 
 import { clearDraft, loadDraft, saveDraft, type FailedLineDraft } from '../add/draft';
 import { useLiveRead } from '../add/liveRead';
 import { rereadLine } from '../../sheet/readSheet';
+import { OmrError } from '../../sheet/omrClient';
 import { insertLine } from '../../sheet/lineInsert';
 import type { RnMeasure } from '../../sheet/notation';
 import type { BarProblem } from '../../sheet/checks';
@@ -232,17 +233,23 @@ export default function ReviewScreen({ id, query }: { id: string; query?: URLSea
     if (!source || !xml) return;
     setRereadProblem(null);
     setRereading((r) => new Set([...r, ...lines.map(lineKey)]));
+    let limit: 'quota' | 'busy' | null = null;
     const results = await Promise.all(
       lines.map((f) =>
         rereadLine(f.job, source.instrument).then(
           (r) => ({ f, measures: r.measures, problems: r.problems }),
-          () => null,
+          (e) => {
+            // Out of free reading for today (or for the minute): say so plainly.
+            if (e instanceof OmrError && e.kind === 'quota') limit = 'quota';
+            else if (e instanceof OmrError && e.kind === 'busy' && limit !== 'quota') limit = 'busy';
+            return null;
+          },
         ),
       ),
     );
     setRereading((r) => new Set([...r].filter((k) => !lines.some((f) => lineKey(f) === k))));
     const got = results.filter((r): r is { f: FailedLineDraft; measures: RnMeasure[]; problems: BarProblem[] } => !!r && r.measures.length > 0);
-    if (got.length < lines.length) setRereadProblem(t.review.rereadFailed);
+    if (got.length < lines.length) setRereadProblem(limit ? t.add.errors[limit] : t.review.rereadFailed);
     if (got.length === 0) return;
     // Latest line first, so putting one in never moves the place of another still to go in.
     let cur = xml;
@@ -360,6 +367,11 @@ export default function ReviewScreen({ id, query }: { id: string; query?: URLSea
             <div>
               <strong>{t.review.failedTitle(failed.length)}</strong>
               <p className="muted" style={{ margin: '2px 0 0' }}>{t.review.failedHelp}</p>
+              {failed.some((f) => f.kind === 'quota') && (
+                <p style={{ margin: '6px 0 0' }} data-testid="daily-limit">
+                  {t.add.errors.quota}
+                </p>
+              )}
             </div>
             <ul className="failed-list">
               {failed.map((f) => {

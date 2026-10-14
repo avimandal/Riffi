@@ -207,6 +207,48 @@ describe('line-by-line reader', () => {
     expect(one.failed.map((f) => f.line)).toEqual([3]);
   });
 
+  it("never re-sends after the AI's rate limit: that line is reported, the rest still get their first try", async () => {
+    const { calls, send } = fakeServer();
+    let t = 0;
+    const limited = async (req: ReaderRequest) => {
+      if (req.mode === 'line' && Number(req.fields.line) === 2) throw new OmrError('busy', 'rl0002', 'ai_rate_limit', 30);
+      return send(req);
+    };
+    const result = await readPrepared([page], {
+      instrument: 'violin',
+      linesPerRequest: 1,
+      parallel: 1,
+      checkRounds: 0,
+      send: limited,
+      shrink: async (b) => b,
+      pacer: new RequestPacer({ rpm: 100, now: () => t, sleep: async (ms) => void (t += ms) }),
+    });
+    expect(result.failed.map((f) => [f.line, f.kind, f.code])).toEqual([[2, 'busy', 'ai_rate_limit']]);
+    expect(result.lineBars.map((l) => l.line)).toEqual([1, 3, 4, 5, 6, 7]);
+    // Every line was asked once, line 2 included: no retries at all.
+    const lineCalls = calls.filter((c) => c.mode === 'line').map((c) => Number(c.fields.line));
+    expect(lineCalls).toEqual([1, 3, 4, 5, 6, 7]);
+    expect(result.timings.retries).toBe(0);
+    // The next request waited out the AI's minute.
+    expect(t).toBeGreaterThanOrEqual(30_000);
+  });
+
+  it("a line whose notes can't be written out is the only one lost", async () => {
+    const { send } = fakeServer();
+    const broken = async (req: ReaderRequest) => {
+      const res = await send(req);
+      if (req.mode === 'line' && Number(req.fields.line) === 4) {
+        const lines = (res.line as { lines: { line: number; measures: RnMeasure[] }[] }).lines;
+        lines[0].measures = [{ n: 10, s1: 'Zq% ##!!' } as RnMeasure];
+      }
+      return res;
+    };
+    const result = await readPrepared([page], { instrument: 'violin', linesPerRequest: 1, checkRounds: 0, send: broken, shrink: async (b) => b, pacer: new RequestPacer({ rpm: 100, ...instant }) });
+    expect(result.failed.map((f) => f.line)).toEqual([4]);
+    expect(result.lineBars.map((l) => l.line)).toEqual([1, 2, 3, 5, 6, 7]);
+    expect(result.musicxml).toContain('<measure');
+  });
+
   it('a used-up daily quota stops sending but keeps the lines already read; with nothing read it says why', async () => {
     const { send } = fakeServer();
     let lineCalls = 0;
@@ -267,16 +309,30 @@ describe('request pacer', () => {
     expect(waits[0]).toBe(61);
   });
 
-  it('waits as long as the server asks when busy, then retries', async () => {
+  it("waits as long as the server asks when it's pacing (nothing sent to the AI), then sends again", async () => {
     let t = 0;
     let n = 0;
     const pacer = new RequestPacer({ rpm: 100, now: () => t, sleep: async (ms) => void (t += ms) });
     const out = await pacer.run(async () => {
-      if (n++ === 0) throw new OmrError('busy', 'abc', 'busy', 23);
+      if (n++ === 0) throw new OmrError('busy', 'abc', 'pace', 23);
       return 'ok';
     });
     expect(out).toBe('ok');
     expect(t).toBe(23_000);
+  });
+
+  it("never re-sends by itself after the AI said no (rate limit, overload, daily limit)", async () => {
+    for (const err of [new OmrError('busy', undefined, 'ai_rate_limit', 40), new OmrError('busy', undefined, 'busy', 15), new OmrError('quota', undefined, 'quota')]) {
+      let calls = 0;
+      const pacer = new RequestPacer({ rpm: 100, ...instant });
+      await expect(
+        pacer.run(async () => {
+          calls++;
+          throw err;
+        }),
+      ).rejects.toBe(err);
+      expect(calls).toBe(1);
+    }
   });
 
   it('gives up on errors that waiting will not fix, and after too long', async () => {
@@ -284,6 +340,6 @@ describe('request pacer', () => {
     await expect(pacer.run(async () => Promise.reject(new OmrError('settings', undefined, 'bad_key')))).rejects.toMatchObject({ kind: 'settings' });
     let t = 0;
     const slow = new RequestPacer({ rpm: 100, maxWaitMs: 30_000, now: () => t, sleep: async (ms) => void (t += ms) });
-    await expect(slow.run(async () => Promise.reject(new OmrError('busy', undefined, 'busy', 40)))).rejects.toMatchObject({ kind: 'busy', code: 'gave_up_waiting' });
+    await expect(slow.run(async () => Promise.reject(new OmrError('busy', undefined, 'pace', 40)))).rejects.toMatchObject({ kind: 'busy', code: 'gave_up_waiting' });
   });
 });

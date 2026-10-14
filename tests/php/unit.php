@@ -36,7 +36,11 @@ check('scrubs keys from log text', !str_contains(RiffiLog::scrub('x-goog-api-key
 check('scrubs key-shaped strings too', RiffiLog::scrub('AIzaZZZZZZZZZZZZZZZZZZZZZZZZZZZ') === '[key]');
 
 // Error classification
-check('429 is busy', riffi_provider_error('gemini', 429, '{"error":{"message":"quota","status":"RESOURCE_EXHAUSTED"}}')->errorCode === 'busy');
+[$line, $problem] = riffi_validate_line("[\n {\"line\": 1, \"measures\": [{\"n\": 1, \"key\": 2, \"time\": \"4/4\", \"s1\": \"D5q E5q F#5q G5q\"}]},\n {\"line\": 2, \"measures\": [{\"n\": 2, \"s1\": \"A5w\"}]}\n]");
+check('a bare list of lines is read as the lines', $problem === null && count($line['lines']) === 2);
+check('a one-object list is the object', (riffi_extract_json('[{"title": "x"}]')['title'] ?? null) === 'x');
+check('429 is the AI\'s rate limit', riffi_provider_error('gemini', 429, '{"error":{"message":"quota","status":"RESOURCE_EXHAUSTED"}}')->errorCode === 'ai_rate_limit');
+check('503 overloaded is busy', riffi_provider_error('gemini', 503, '{"error":{"message":"The model is overloaded.","status":"UNAVAILABLE"}}')->errorCode === 'busy');
 check('404 is a wrong model name', riffi_provider_error('gemini', 404, '{"error":{"message":"models/x is not found"}}')->errorCode === 'model_not_found');
 check('bad key', riffi_provider_error('gemini', 400, '{"error":{"message":"API key not valid. Please pass a valid API key."}}')->errorCode === 'bad_key');
 check('unsupported location', riffi_provider_error('gemini', 400, '{"error":{"message":"User location is not supported for the API use.","status":"FAILED_PRECONDITION"}}')->errorCode === 'region');
@@ -139,6 +143,8 @@ check('claude when chosen', riffi_provider($pc) instanceof RiffiClaude);
 check('reads Gemini\'s retryDelay', $r === 37 && $daily === false);
 [$r, $daily] = riffi_retry_info('{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}');
 check('spots a used-up daily quota', $daily === true);
+[$r, $daily] = riffi_retry_info('{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"20s"},{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}');
+check('a daily quota stays daily even with a short retry delay', $daily === true && $r === 20);
 check('no retry info in a plain error', riffi_retry_info('<html>busy</html>') === [0, false]);
 
 $parts = riffi_line_parts([['image/jpeg', 'x']], 'violin', ['key' => 2, 'time' => '4/4', 'clef' => 'treble', 'first_bar' => 1, 'line' => 1, 'lines' => 7, 'page' => 1, 'pages' => 1, 'pickup' => true, 'pickup_notes' => 'A5e'], ['F5 D5 A4 F5']);

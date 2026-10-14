@@ -28,13 +28,25 @@ function outcome(body: string): ReaderResult {
   return last;
 }
 
-/** Replays the recorded requests exactly as they were made (same grouping, same errors, in order). */
-export function replayer(rec: Recording) {
+/**
+ * Replays the recorded requests as they were made (same grouping, same errors, in order).
+ * `skipErrors`: answer each request with its first recorded reply that wasn't an error,
+ * as a server that wasn't overloaded would have (the app no longer re-sends after "busy").
+ */
+export function replayer(rec: Recording, opts: { skipErrors?: boolean } = {}) {
   const used = new Set<number>();
+  const isError = (body: string) => {
+    try {
+      outcome(body);
+      return false;
+    } catch {
+      return true;
+    }
+  };
   return async (req: ReaderRequest): Promise<ReaderResult> => {
     const want = (r: Recording['responses'][number]) =>
       r.mode === req.mode && r.page === Number(req.fields.page ?? 1) && (r.line ?? null) === (req.fields.line === undefined ? null : Number(req.fields.line)) && (r.round ?? null) === (req.fields.round === undefined ? null : Number(req.fields.round));
-    const i = rec.responses.findIndex((r, k) => !used.has(k) && want(r));
+    const i = rec.responses.findIndex((r, k) => !used.has(k) && want(r) && !(opts.skipErrors && isError(r.body)));
     if (i < 0) throw new Error(`No recorded reply for ${req.mode} page ${req.fields.page} line ${req.fields.line} round ${req.fields.round}`);
     used.add(i);
     return outcome(rec.responses[i].body);

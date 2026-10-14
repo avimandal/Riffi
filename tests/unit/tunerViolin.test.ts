@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MonoEngine } from '../../src/engines/mono/monoEngine';
 import { TUNER_RANGE, TunerSmoother, tunerReading, type TunerReading } from '../../src/gadget/tuner';
-import { addTone, blank, SR, VIOLINISH } from '../fixtures/audio';
+import { addTone, blank, SR } from '../fixtures/audio';
 import { feed, shiftCents, throughPhone, violinClip, type Clip, type PhoneOptions } from '../fixtures/violinAudio';
 
 /**

@@ -83,10 +83,10 @@ function riffi_default_config(): array
         // Pictures in one line-by-line request (a page of up to 12 lines, photo + engraving each).
         'MAX_IMAGES' => 24,
         // Lines of music read (or double-checked) per request. Each line is still its own
-        // full-resolution picture. Gemini's free tier allows only ~20 requests a day per
-        // model, so the default reads a whole page in one go (about 3–4 requests per page).
-        // With a paid key, 1 reads strictly one line at a time.
-        'LINES_PER_REQUEST' => 3,
+        // full-resolution picture. Gemini's free tier allows only 20 requests a day per
+        // model, so 4 reads a 7-line page in 3 requests (measured on the free tier: about
+        // 7 s for 4 lines with 'low' thinking). With a paid key, 1 reads one line at a time.
+        'LINES_PER_REQUEST' => 4,
         // The same for Claude (paid, so one line per request is affordable and quickest).
         'CLAUDE_LINES_PER_REQUEST' => 1,
         'MAX_BYTES_PER_PAGE' => 3 * 1024 * 1024,
@@ -109,8 +109,9 @@ function riffi_default_config(): array
         // up after 100 s, so stay well under it; a line that runs out is retried on its own.
         'REQUEST_SECONDS' => 60,
         // Requests the app may have waiting on the reader at once (still within *_RPM).
-        // Shared hosts limit PHP processes, so keep this small.
-        'PARALLEL_REQUESTS' => 3,
+        // Shared hosts limit PHP processes, and Gemini's free tier often answers "high
+        // demand", so keep this small.
+        'PARALLEL_REQUESTS' => 2,
         // Private log of failures (no keys, no images). null = a riffi-logs folder
         // next to (outside) the web root, falling back to the system temp folder. false = off.
         'LOG_FILE' => null,
@@ -120,8 +121,9 @@ function riffi_default_config(): array
         // reader → Change). '' = no Change button; PROVIDER is always used.
         'ADMIN_PASSWORD' => '',
         // Double-check rounds per line of music (0 = off, 1 or 2). Each round is one more
-        // request per batch of lines, so 0 saves the most.
-        'CHECK_ROUNDS' => 2,
+        // request per batch of lines. Off by default: on the free tier the requests are
+        // better spent, and on the recorded run the check didn't improve accuracy.
+        'CHECK_ROUNDS' => 0,
         // The site-wide music reader choice. null = riffi-settings.json next to the
         // private log (outside the web root).
         'SETTINGS_FILE' => null,
@@ -681,10 +683,22 @@ function riffi_user_parts(array $pages, string $instrument, int $page = 1, int $
 // ---------------------------------------------------------------------------
 // Validation (light; the app does the full conversion)
 
-/** Pull the JSON object out of a reply (tolerates code fences and chatter). */
+/**
+ * Pull the JSON object out of a reply (tolerates code fences and chatter). A bare
+ * list (models sometimes send `[{"line": 1, …}, …]` instead of `{"lines": […]}`)
+ * is taken as the list of lines, or as the object itself if it holds just one.
+ */
 function riffi_extract_json(string $text): ?array
 {
     $start = strpos($text, '{');
+    $open = strpos($text, '[');
+    if ($open !== false && ($start === false || $open < $start)) {
+        $close = strrpos($text, ']');
+        $list = $close !== false && $close > $open ? json_decode(substr($text, $open, $close - $open + 1), true) : null;
+        if (is_array($list) && array_is_list($list) && $list !== [] && is_array($list[0])) {
+            return count($list) === 1 && !isset($list[0]['line']) ? $list[0] : ['lines' => $list];
+        }
+    }
     $end = strrpos($text, '}');
     if ($start === false || $end === false || $end < $start) {
         return null;
@@ -882,8 +896,13 @@ function riffi_provider_error(string $provider, int $status, string $body): Riff
         if ($daily) {
             return new RiffiHttpError(429, 'quota', "The music reader has used up today's free reading. Try again tomorrow.", $msg);
         }
-        $retry = $retry > 0 ? $retry : ($status === 429 ? 30 : 15);
+        $rateLimited = $status === 429 || str_contains($lower, 'resource_exhausted');
+        $retry = $retry > 0 ? $retry : ($rateLimited ? 30 : 15);
         header('Retry-After: ' . $retry);
+        // The provider's own per-minute limit: the app never retries this automatically.
+        if ($rateLimited) {
+            return new RiffiHttpError(429, 'ai_rate_limit', "Riffi's music reader has reached its limit for the minute, try again in a minute.", $msg, $retry);
+        }
         return new RiffiHttpError(503, 'busy', "Riffi's music reader is busy, try again in a minute.", $msg, $retry);
     }
     if ($status === 404 || str_contains($lower, 'not found') && str_contains($lower, 'model')) {
@@ -926,10 +945,7 @@ function riffi_retry_info(string $body): array
             }
         }
     }
-    if ($daily && $retry > 0 && $retry < 120) {
-        // A short retry delay means it's really a per-minute limit as well; let the app wait.
-        $daily = false;
-    }
+    // A PerDay violation means the day's allowance is gone, whatever retry delay comes with it.
     return [min($retry, 300), $daily];
 }
 
@@ -963,7 +979,8 @@ function riffi_provider_pace(array $cfg, string $provider): void
         if (count($hits) >= $rpm) {
             $wait = (int) ceil(60 - ($now - min($hits))) + 1;
             header('Retry-After: ' . $wait);
-            throw new RiffiHttpError(429, 'busy', 'Waiting for the music reader.', "pace: $rpm per minute", $wait);
+            // 'pace': nothing was sent to the AI, so the app waits its turn and sends again.
+            throw new RiffiHttpError(429, 'pace', 'Waiting for the music reader.', "pace: $rpm per minute", $wait);
         }
         $hits[] = $now;
         ftruncate($fh, 0);
@@ -1666,8 +1683,13 @@ function riffi_validate_check(string $text): array
     return [['lines' => $out], null];
 }
 
-/** Ask the provider and validate; retry once with the problem if there's time. */
-function riffi_ask(RiffiProvider $provider, string $system, array $turns, RiffiCall $call, callable $validate): array
+/**
+ * Ask the provider and validate. With $attempts = 2, an unusable reply is asked
+ * again once (with the problem) if there's time. The app's line, check and
+ * overview requests use 1: the app makes the one retry itself, so a line never
+ * costs more than two AI calls in all.
+ */
+function riffi_ask(RiffiProvider $provider, string $system, array $turns, RiffiCall $call, callable $validate, int $attempts = 2): array
 {
     for ($attempt = 1; ; $attempt++) {
         $t0 = microtime(true);
@@ -1684,7 +1706,7 @@ function riffi_ask(RiffiProvider $provider, string $system, array $turns, RiffiC
             return $result;
         }
         RiffiLog::write('invalid_reply', ['attempt' => $attempt, 'problem' => $problem, 'stop' => $stop, 'start' => substr($text, 0, 200), 'end' => substr($text, -200)]);
-        if ($attempt >= 2 || $call->remaining() < 25) {
+        if ($attempt >= $attempts || $call->remaining() < 25) {
             throw new RiffiHttpError(422, 'unreadable', 'We could not read music from that photo.', $problem);
         }
         $turns[] = ['role' => 'assistant', 'parts' => [['text' => $text !== '' ? $text : '(no output)']]];
@@ -1744,11 +1766,11 @@ function riffi_handle_scan(array $cfg): void
         $turn = fn (array $parts) => [['role' => 'user', 'parts' => $parts]];
         switch ($mode) {
             case 'overview':
-                $info = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_overview_parts($images[0], $instrument, $ctx)), $call, 'riffi_validate_overview');
+                $info = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_overview_parts($images[0], $instrument, $ctx)), $call, 'riffi_validate_overview', 1);
                 $out->send(['type' => 'result', 'overview' => $info, 'provider' => $provider::NAME, 'ref' => RiffiLog::$ref]);
                 break;
             case 'line':
-                $line = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_line_parts($images, $instrument, $ctx, $hints)), $call, 'riffi_validate_line');
+                $line = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_line_parts($images, $instrument, $ctx, $hints)), $call, 'riffi_validate_line', 1);
                 RiffiLog::write('line_ok', ['seconds' => round(microtime(true) - $started, 1), 'lines' => count($line['lines']), 'bars' => array_sum(array_map(fn ($l) => count($l['measures']), $line['lines']))]);
                 $out->send(['type' => 'result', 'line' => $line, 'provider' => $provider::NAME, 'ref' => RiffiLog::$ref]);
                 break;
@@ -1766,7 +1788,7 @@ function riffi_handle_scan(array $cfg): void
                 }
                 $problems = array_map(fn ($p) => riffi_clean_strings($p, 20, 300), array_slice(is_array($json('problems')) ? $json('problems') : [], 0, count($pairs)));
                 $numbers = array_map('intval', array_filter(is_array($json('line_numbers')) ? $json('line_numbers') : [], 'is_numeric'));
-                $check = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_check_parts($pairs, $instrument, $ctx, $numbers, $transcriptions, $problems, $hints)), $call, 'riffi_validate_check');
+                $check = riffi_ask($provider, riffi_line_system_prompt(), $turn(riffi_check_parts($pairs, $instrument, $ctx, $numbers, $transcriptions, $problems, $hints)), $call, 'riffi_validate_check', 1);
                 RiffiLog::write('check_ok', ['seconds' => round(microtime(true) - $started, 1), 'lines' => count($check['lines']), 'mismatches' => array_sum(array_map(fn ($l) => count($l['mismatches']), $check['lines']))]);
                 $out->send(['type' => 'result', 'check' => $check, 'provider' => $provider::NAME, 'ref' => RiffiLog::$ref]);
                 break;
