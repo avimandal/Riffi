@@ -191,6 +191,103 @@ test("the instrument defaults to the kid's own, even after a reload", async ({ p
   await expect(page.getByRole('button', { name: 'Piano' })).toHaveAttribute('aria-pressed', 'false');
 });
 
+test('piano: each grand staff (both hands, both in treble clef) is one line, read together; either hand can be fixed', async ({ page }) => {
+  test.setTimeout(120_000);
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const piano = JSON.parse(readFileSync(new URL('../fixtures/sheets/piano-allegro.reference.json', import.meta.url), 'utf8')) as { lines: [number, number][]; measures: Measure[] };
+  const pianoLine = (line: number) => piano.measures.filter((m) => m.n >= piano.lines[line - 1][0] && m.n <= piano.lines[line - 1][1]);
+  const requests: ReturnType<typeof parseForm>[] = [];
+  await page.route('**/api/omr.php**', async (route) => {
+    const req = route.request();
+    if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: ['gemini'], provider: 'gemini', rpm: { gemini: 100 }, lines_per_request: 4, check_rounds: 0, parallel: 2, request_seconds: 60 }) });
+    if (req.url().includes('timings=1')) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    const form = parseForm(req);
+    requests.push(form);
+    saveParts(req, `piano-${requests.length}`);
+    if (form.fields.mode === 'overview') {
+      return route.fulfill(ndjson({ type: 'result', overview: { title: 'Allegro', key: 0, time: '4/4', clef: 'treble', clef2: 'treble', staves: 2, lines: 3 }, provider: 'gemini', ref: 'pn0001' }));
+    }
+    const first = Number(form.fields.line);
+    const lines = form.files.map((_, k) => ({ line: first + k, measures: pianoLine(first + k), unsure: [] }));
+    return route.fulfill(ndjson({ type: 'result', line: { lines }, provider: 'gemini', ref: 'pn0002' }));
+  });
+
+  // A violin player's profile: the page itself shows it's piano music.
+  await newKid(page, 'Pia');
+  await page.getByTestId('add-music').click();
+  await page.getByTestId('photo-input').setInputFiles(fileURLToPath(new URL('../fixtures/sheets/piano-allegro.webp', import.meta.url)));
+  await page.getByRole('button', { name: 'Read my music' }).click();
+  await expect(page.getByRole('heading', { name: 'Check the notes' })).toBeVisible({ timeout: 90_000 });
+
+  // The real photo: three systems found, each sent as ONE picture marked as two staves.
+  const lineReqs = requests.filter((r) => r.fields.mode === 'line');
+  expect(lineReqs.flatMap((r) => r.files.map((f) => f.name))).toEqual(['line-1-1.jpg', 'line-1-2.jpg', 'line-1-3.jpg']);
+  expect(lineReqs.every((r) => r.fields.staves === '2' && r.fields.clef2 === 'treble')).toBe(true);
+  // The lower staff's measured heads are named in treble clef (bar 4's left hand: G3 E4 C4 E4 G3 D4 B3 D4).
+  expect(JSON.parse(lineReqs[0].fields.hints)[0]).toMatch(/lower staff: .*G3 E4 C4 E4 G3 D4 B3 D4/);
+
+  // A grand staff on screen: two staves per system.
+  const sheet = page.getByTestId('sheet');
+  await expect(sheet).toHaveAttribute('data-rendered', 'true', { timeout: 20_000 });
+  await expect(page.getByTestId('failed-lines')).toHaveCount(0);
+
+  // Fix a left-hand note: the first note on the lower staff (C4) goes up to D4.
+  const box = await page.evaluate(() => {
+    // Note heads in bands down the page: system 1's right hand, then its left hand, …
+    const heads = [...document.querySelectorAll('[data-testid="sheet"] .vf-notehead')].map((h) => h.getBoundingClientRect()).filter((r) => r.width > 0);
+    const ys = heads.map((r) => r.top + r.height / 2).sort((a, b) => a - b);
+    const bands: number[][] = [];
+    for (const y of ys) {
+      const band = bands[bands.length - 1];
+      if (band && y - band[band.length - 1] < 25) band.push(y);
+      else bands.push([y]);
+    }
+    const lower = bands[1];
+    if (!lower) return null;
+    const inLower = heads.filter((r) => r.top + r.height / 2 >= lower[0] && r.top + r.height / 2 <= lower[lower.length - 1]).sort((a, b) => a.left - b.left);
+    const all = [...document.querySelectorAll('[data-testid="sheet"] .vf-notehead')];
+    return all.findIndex((h) => {
+      const r = h.getBoundingClientRect();
+      return r.left === inLower[0].left && r.top === inLower[0].top;
+    });
+  });
+  expect(box).toBeGreaterThanOrEqual(0);
+  await sheet.locator('.vf-notehead').nth(box!).click();
+  if (process.env.RIFFI_SHOTS) await page.screenshot({ path: `${process.env.RIFFI_SHOTS}/piano-review.png`, fullPage: true });
+  await expect(page.getByText('Selected: C4')).toBeVisible();
+  // A semitone at a time: C4 → C♯4 → D4.
+  await page.getByRole('button', { name: 'Higher' }).click();
+  await expect(page.getByText('Selected: C♯4')).toBeVisible();
+  await page.getByRole('button', { name: 'Higher' }).click();
+  await expect(page.getByText('Selected: D4')).toBeVisible();
+  await page.getByTestId('looks-good').click();
+  await expect(page.getByTestId('start-stop')).toBeVisible();
+
+  const xml = await page.evaluate(
+    () =>
+      new Promise<string>((done) => {
+        const open = indexedDB.open('riffi');
+        open.onsuccess = () => {
+          const all = open.result.transaction('pieces').objectStore('pieces').getAll();
+          all.onsuccess = () => done((all.result[0] as { musicxml: string }).musicxml);
+        };
+      }),
+  );
+  expect((xml.match(/<measure /g) ?? []).length).toBe(16);
+  expect(xml).toContain('<staves>2</staves>');
+  expect((xml.match(/<backup>/g) ?? []).length).toBe(16);
+  const leftNotes = [...xml.matchAll(/<note>((?:(?!<\/note>).)*?)<\/note>/gs)].map((m) => m[1]).filter((n) => n.includes('<staff>2</staff>'));
+  // Every left-hand note is as written (snapping to the measured heads moved nothing wrongly), but the one fixed.
+  const pitch = (n: string) => `${n.match(/<step>(\w)<\/step>/)?.[1]}${n.match(/<octave>(\d)<\/octave>/)?.[1]}`;
+  const want = piano.measures.flatMap((m) => String(m.s2).split(' ').map((t) => t.replace(/[whqest].*$/, '')));
+  want[0] = 'D4';
+  expect(leftNotes.filter((n) => !n.includes('<rest')).map(pitch)).toEqual(want);
+  const rightNotes = [...xml.matchAll(/<note>((?:(?!<\/note>).)*?)<\/note>/gs)].map((m) => m[1]).filter((n) => n.includes('<staff>1</staff>') && !n.includes('<rest'));
+  expect(rightNotes.map(pitch)).toEqual(piano.measures.flatMap((m) => String(m.s1).split(' ').map((t) => t.replace(/[whqest].*$/, ''))));
+  expect(errors).toEqual([]);
+});
+
 test("the free tier's daily limit mid-read: what was read is kept, the limit is said plainly, and nothing is retried", async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));

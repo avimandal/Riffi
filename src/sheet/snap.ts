@@ -39,6 +39,13 @@ const MAX_GAP = 8;
 const MAX_EXTRA = 2;
 /** A lone note between two agreeing ones is weak evidence: only moved by up to a third. */
 const MAX_LONE_MOVE = 2;
+/** Bottom-line note of each clef (diatonic, C4 = 28): ledger-line positions are measured less surely. */
+const BOTTOM_LINE: Record<string, number> = { treble: 30, bass: 18, alto: 24, tenor: 22 };
+/** On a ledger line (or past one), for this clef? Pure. */
+const onLedger = (name: string, clef: string) => {
+  const d = diatonic(name) - (BOTTOM_LINE[clef] ?? BOTTOM_LINE.treble);
+  return d < -1 || d > 9;
+};
 
 /** Notes and heads that agree exactly, in order (longest common subsequence). */
 function anchors(notes: string[], heads: string[]): [number, number][] {
@@ -64,7 +71,7 @@ function anchors(notes: string[], heads: string[]): [number, number][] {
  * line slipped). With a couple of extra heads (stray marks), the heads closest
  * in pitch are used. Returns [noteIndex, headIndex] pairs to move.
  */
-function fillGaps(notes: string[], heads: string[], anchor: [number, number][]): [number, number][] {
+function fillGaps(notes: string[], heads: string[], anchor: [number, number][], clef: string): [number, number][] {
   const moves: [number, number][] = [];
   // Only stretches with an agreeing note on both sides (the ends of a line are left alone).
   for (let k = 0; k + 1 < anchor.length; k++) {
@@ -85,7 +92,9 @@ function fillGaps(notes: string[], heads: string[], anchor: [number, number][]):
     for (let i = 0, j = 0; i < n; ) {
       const d = Math.abs(diatonic(notes[i0 + 1 + i]) - diatonic(heads[j0 + 1 + j]));
       if (cost[i][j] === d + cost[i + 1][j + 1]) {
-        if (n > 1 || d <= MAX_LONE_MOVE) moves.push([i0 + 1 + i, j0 + 1 + j]);
+        // A lone note one step from a head on a ledger line: the measuring is least sure there, keep the model's.
+        const shaky = d === 1 && (onLedger(notes[i0 + 1 + i], clef) || onLedger(heads[j0 + 1 + j], clef));
+        if (n > 1 || (d <= MAX_LONE_MOVE && !shaky)) moves.push([i0 + 1 + i, j0 + 1 + j]);
         i++;
         j++;
       } else j++;
@@ -100,7 +109,7 @@ const tokens = (src: string) => src.replace(/(\d)\(/g, ' $1( ').replace(/(?<!\d)
  * Snap one line's pitches to the measured heads (natural names per staff, left
  * to right). `fifths` is the key at the start of the line. Pure.
  */
-export function snapToHeads(measures: RnMeasure[], heads: string[][], fifths = 0): { measures: RnMeasure[]; moved: number } {
+export function snapToHeads(measures: RnMeasure[], heads: string[][], fifths = 0, clefs: [string, string] = [measures.find((m) => m.clef)?.clef ?? 'treble', measures.find((m) => m.clef2)?.clef2 ?? 'bass']): { measures: RnMeasure[]; moved: number } {
   const out = measures.map((m) => ({ ...m }));
   const toks = out.map((m) => ({ s1: m.s1 ? tokens(m.s1) : [], s2: m.s2 ? tokens(m.s2) : [] }));
   let moved = 0;
@@ -123,7 +132,7 @@ export function snapToHeads(measures: RnMeasure[], heads: string[][], fifths = 0
     const names = slots.map((x) => x.name);
     const agree = anchors(names, found);
     if (agree.length < slots.length * MIN_AGREEMENT) return;
-    for (const [i, j] of fillGaps(names, found, agree)) {
+    for (const [i, j] of fillGaps(names, found, agree, clefs[si])) {
       const s = slots[i];
       if (!s.snappable || s.name === found[j]) continue;
       // rest = length, dots and any tie, kept exactly as the model wrote them.

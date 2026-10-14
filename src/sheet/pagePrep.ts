@@ -1,7 +1,7 @@
 import type { Instrument } from '../config';
 import { canvasToJpeg, renderPageCanvas, type PageDraft } from '../screens/add/imagePrep';
 import { findHeads, type Head } from './noteHeads';
-import { detectStaves, systemBands } from './staffDetect';
+import { detectStaves, groupSystems, systemBands } from './staffDetect';
 
 /**
  * Get a page ready for line-by-line reading: one small picture of the whole page
@@ -27,6 +27,8 @@ export interface PreparedPage {
   lines: Blob[];
   /** Note heads measured on each line: [line][staff] → heads left to right. Named once the clef is known. */
   heads?: Head[][][];
+  /** Staves in each line: 2 for a grand staff (two staves joined by a brace), read together. */
+  staves?: (1 | 2)[];
   /** Where each line is on the page, as fractions of its height (top, bottom). */
   bands?: { top: number; bottom: number }[];
   /** False if no staves were found, and the whole page is sent as one "line". */
@@ -74,7 +76,8 @@ export async function preparePage(page: PageDraft, instrument: Instrument, sizes
   const full = await renderPageCanvas(page, FULL_MAX_EDGE);
   const { gray, w, h } = grayOf(full, analysisWidth);
   const staves = detectStaves(gray, w, h);
-  const bands = systemBands(staves, w, h, instrument === 'piano' ? 2 : 1);
+  // Staves joined by a brace or by bar lines running through them are one line (a grand staff).
+  const bands = systemBands(staves, w, h, groupSystems(staves, { gray, width: w, height: h }, instrument === 'piano' ? 2 : 1));
   const k = full.width / w;
   const context = await canvasToJpeg(shrink(full, CONTEXT_MAX_EDGE), 0.8);
   if (bands.length === 0) {
@@ -86,5 +89,5 @@ export async function preparePage(page: PageDraft, instrument: Instrument, sizes
   const found = findHeads(gray, w, h, staves);
   const heads = bands.map((b) => b.staves.map((st) => found[staves.indexOf(st)] ?? []));
   const headsMs = performance.now() - t1;
-  return { context, lines, heads, bands: bands.map((b) => ({ top: b.y0 / h, bottom: b.y1 / h })), detected: true, timing: { prepMs: performance.now() - t0 - headsMs, headsMs } };
+  return { context, lines, heads, staves: bands.map((b) => (b.staves.length === 2 ? 2 : 1)), bands: bands.map((b) => ({ top: b.y0 / h, bottom: b.y1 / h })), detected: true, timing: { prepMs: performance.now() - t0 - headsMs, headsMs } };
 }
