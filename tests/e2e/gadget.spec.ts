@@ -50,11 +50,24 @@ test('Tuner & Metronome: metronome, counting practice, and tuner', async ({ page
   // No player switcher at the top of Tools: the whole device, Start included, fits on a phone.
   await expect(page.getByTestId('switch-player')).toHaveCount(0);
   await expect(page.getByTestId('metronome-start')).toBeInViewport({ ratio: 1 });
+  // Phones: the device fills the width (16px either side) and all of it, Start included, sits above the bottom tabs.
+  const desktop = page.viewportSize()!;
+  for (const [width, height] of [[390, 844], [360, 780]]) {
+    await page.setViewportSize({ width, height });
+    const box = (await page.locator('section.gadget').boundingBox())!;
+    const nav = (await page.locator('.bottom-nav').boundingBox())!;
+    expect(Math.round(box.x), `${width}px`).toBe(16);
+    expect(Math.round(width - box.x - box.width), `${width}px`).toBe(16);
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height, `${width}x${height}`).toBeLessThanOrEqual(nav.y);
+  }
+  await page.setViewportSize(desktop);
 
   // Accent: a button on the device, shown on the LCD, the same setting as the Menu's.
   const accent = page.getByTestId('accent');
   await expect(accent).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByTestId('lcd-accent')).toHaveText('>');
+  await expect(page.getByTestId('lcd-accent')).toHaveAttribute('aria-label', 'Accent on beat 1');
+  await expect(accent.locator('.icon')).toHaveText('counter_1');
   await accent.click();
   await expect(accent).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByTestId('lcd-accent')).toHaveCount(0);

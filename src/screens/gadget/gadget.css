@@ -40,9 +40,7 @@
   container-type: inline-size;
   position: relative;
   width: 100%;
-  /* Never taller than the screen leaves room for (title above, bottom tabs below): the
-     device is about 1.68 times as tall as it is wide, so Start/Stop always shows. */
-  max-width: min(560px, max(300px, calc((100dvh - 210px) / 1.68)));
+  max-width: 560px;
   margin: 0 auto;
   padding: 10px 14px 12px;
   border-radius: 36px;
@@ -495,11 +493,19 @@
   font-weight: 700;
 }
 
-/* Phones: let the device use the whole width. */
-@media (max-width: 480px) {
+/* Tablets and desktops: never taller than the screen leaves room for (title above,
+   bottom tabs below). The device is about 1.68 times as tall as it is wide. */
+@media (min-width: 600px) {
+  .gadget {
+    max-width: min(560px, max(300px, calc((100dvh - 210px) / 1.68)));
+  }
+}
+
+/* Phones: the device fills the width, 16px either side. */
+@media (max-width: 599px) {
   .gadget-page {
-    padding-left: 8px;
-    padding-right: 8px;
+    padding-left: 16px;
+    padding-right: 16px;
   }
   .gadget {
     border-radius: 28px;
@@ -531,4 +537,13 @@
 }
 .lcd-accent {
   font-weight: 900;
+}
+
+/* The accent button's and LCD's beat-1 icon. */
+.g-accent-mark .icon,
+.lcd-accent .icon {
+  vertical-align: middle;
+}
+.lcd-accent .icon {
+  font-size: 1.15em;
 }
