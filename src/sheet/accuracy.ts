@@ -178,6 +178,24 @@ export function compareScores(pred: RnScore, ref: RnScore & { uncertain?: number
   };
 }
 
+/** Each hand of a grand staff on its own: right = upper staff (s1), left = lower staff (s2). Pure. */
+export function compareHands(pred: RnScore, ref: RnScore & { uncertain?: number[] }): { right: AccuracyReport; left: AccuracyReport } {
+  const only = <T extends RnScore>(s: T, k: 's1' | 's2'): T => ({ ...s, measures: (s.measures ?? []).map((m) => ({ ...m, s1: m[k], s2: undefined })) });
+  return { right: compareScores(only(pred, 's1'), only(ref, 's1')), left: compareScores(only(pred, 's2'), only(ref, 's2')) };
+}
+
+/** Bars read exactly right (every note's pitch, start and length) and notes with the right pitch, for one report. Pure. */
+export function exactCounts(r: AccuracyReport): { bars: number; of: number; notes: number; notesOf: number } {
+  const real = r.bars.filter((b) => !b.extra && !b.uncertain);
+  const extraNotes = r.bars.filter((b) => b.extra).reduce((s, b) => s + b.predNotes, 0);
+  return {
+    bars: real.filter((b) => b.matchedN !== undefined && b.refNotes === b.predNotes && b.rhythmMatched === b.refNotes).length,
+    of: real.length,
+    notes: real.reduce((s, b) => s + b.pitchMatched, 0),
+    notesOf: real.reduce((s, b) => s + Math.max(b.refNotes, b.predNotes), 0) + extraNotes,
+  };
+}
+
 /** Plain-text table for the console / PR. */
 export function formatReport(r: AccuracyReport, label = ''): string {
   const pct = (x: number) => `${Math.round(x * 1000) / 10}%`;

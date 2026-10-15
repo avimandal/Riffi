@@ -438,9 +438,9 @@ Measure fields (leave out what doesn't apply):
 - n: the printed bar number (count on from the last printed number). pickup: true for an incomplete first bar (anacrusis).
 - key: key signature as fifths (-7..7: D major = 2, F major = -1, none = 0). On the first bar, then only when it changes.
 - time: "4/4", "3/4", "6/8"… On the first bar, then only when it changes. A "C" symbol is "4/4"; a C with a vertical line through it is "2/2".
-- clef / clef2: "treble", "bass", "alto" or "tenor", on the first bar and when it changes (clef2 = piano bass staff).
+- clef / clef2: "treble", "bass", "alto" or "tenor", on the first bar and when it changes. clef = the upper (or only) staff, clef2 = the lower staff of a grand staff. Read the clef that is printed: in beginner piano music both staves are often treble.
 - repeat: "start", "end" or "both". ending: "1", "2" or "1,2" on bars under a volta bracket; ending_stop: true on the bracket's last bar.
-- s1: the notes of staff 1. s2: staff 2 (piano only).
+- s1: the notes of staff 1 (the upper staff). s2: staff 2, the lower staff of a grand staff (two staves joined by a brace): bar N of s2 is played at the same time as bar N of s1, so both go in the same measure.
 
 Notes, space-separated, in order:
 - A note is letter + accidental + octave + length: C#5q, Bb4e., F#5s~
@@ -512,6 +512,9 @@ function riffi_line_context(): array
         'key' => is_numeric($key) && (int) $key >= -7 && (int) $key <= 7 ? (int) $key : null,
         'time' => preg_match('#^\d{1,2}/(1|2|4|8|16|32)$#', $time) ? $time : null,
         'clef' => in_array($_POST['clef'] ?? '', ['treble', 'bass', 'alto', 'tenor'], true) ? (string) $_POST['clef'] : null,
+        'clef2' => in_array($_POST['clef2'] ?? '', ['treble', 'bass', 'alto', 'tenor'], true) ? (string) $_POST['clef2'] : null,
+        // 2 when the app found each line to be a grand staff (two staves joined by a brace).
+        'staves' => (int) ($_POST['staves'] ?? 1) === 2 ? 2 : 1,
         'first_bar' => is_numeric($_POST['first_bar'] ?? null) ? max(0, min(9999, (int) $_POST['first_bar'])) : null,
         'line' => max(1, min(99, (int) ($_POST['line'] ?? 1))),
         'lines' => max(1, min(99, (int) ($_POST['lines'] ?? 1))),
@@ -525,7 +528,7 @@ function riffi_line_context(): array
 function riffi_instrument_text(string $instrument): string
 {
     return match ($instrument) {
-        'piano' => 'The child plays piano: keep both staves (s1 = right hand / treble, s2 = left hand / bass).',
+        'piano' => 'The child plays piano: keep both staves (s1 = upper staff / right hand, s2 = lower staff / left hand), with each staff\'s own clef as printed.',
         'voice' => 'The child sings: transcribe the vocal melody line only (not any piano accompaniment).',
         default => 'The child plays violin: if there is also a piano accompaniment, transcribe only the violin line.',
     };
@@ -541,7 +544,8 @@ function riffi_overview_parts(array $image, string $instrument, array $ctx): arr
         . '{"title": "…" or null, "composer": "…" or null, "tempo": {"bpm": 70, "beat": "q", "text": "Brightly"} or null, '
         . '"key": fifths at the start of the first line (count the sharps or flats right after the clef; D major = 2), '
         . '"time": the time signature at the start ("4/4", "3/4", "6/8"…; read the two digits carefully, a "C" is "4/4" and a C with a vertical line is "2/2"), '
-        . '"clef": "treble" (or "bass", "alto", "tenor"), "staves": 1 (2 for a piano grand staff), '
+        . '"clef": the clef of the upper (or only) staff, "treble" (or "bass", "alto", "tenor"), "staves": 1, or 2 if each line is a grand staff (two staves joined by a brace), '
+        . '"clef2": for a grand staff, the clef printed on the lower staff (often "bass", but in beginner piano music it may be "treble": look at it), else null, '
         . '"pickup": true if the first bar is incomplete (an anacrusis: e.g. a single eighth note before the first full bar or before a repeat sign), '
         . '"pickup_notes": the pickup\'s notes in Riffi Notation (e.g. "A5e"), or "", '
         . '"lines": how many lines (systems) of music are on the page, '
@@ -584,8 +588,17 @@ function riffi_line_parts(array $images, string $instrument, array $ctx, array $
     }
     $text = ($n === 1
         ? "This picture is ONE line (system) of music: line $first of {$c['lines']}$where. "
-        : "These $n pictures are lines $first to $last (of {$c['lines']}$where), each ONE line (system) of music, in order. Read each picture on its own. ")
-        . riffi_instrument_text($instrument) . "\n";
+        : "These $n pictures are lines $first to $last (of {$c['lines']}$where), each ONE line (system) of music, in order. Read each picture on its own. ");
+    if (($c['staves'] ?? 1) === 2) {
+        // A grand staff: both staves are one line, read together with the bars lined up.
+        $text .= ($n === 1 ? 'It is' : 'Each is') . ' a grand staff: TWO staves joined by a brace on the left, played together (upper staff = right hand, lower staff = left hand). '
+            . 'Keep both: s1 = the upper staff, s2 = the lower staff, in the SAME measure: bar N of s2 sounds at the same time as bar N of s1, and both add up to the same length. Never put the lower staff\'s bars after the upper staff\'s. '
+            . 'Read the clef printed at the start of EACH staff and give it as "clef" (upper) and "clef2" (lower) on the first measure: the lower staff is often bass clef, but in beginner piano music it is often treble, so look. '
+            . (($c['clef2'] ?? null) !== null ? "The page overview saw a {$c['clef2']} clef on the lower staff. " : '')
+            . 'Small numbers above or below notes are fingering: leave them out.' . "\n";
+    } else {
+        $text .= riffi_instrument_text($instrument) . "\n";
+    }
     if ($c['key'] !== null) {
         $text .= 'Key signature at the start' . ($n > 1 ? " of line $first" : ' of this line') . ': ' . riffi_key_name($c['key']) . " (\"key\": {$c['key']}). ";
     }
@@ -607,7 +620,7 @@ function riffi_line_parts(array $images, string $instrument, array $ctx, array $
     }
     $text .= riffi_hint_text($hints, $first);
     $text .= "\nTranscribe every bar of " . ($n === 1 ? 'the line' : 'each line') . ", left to right. Reply with JSON:\n"
-        . '{"lines": [{"line": ' . $first . ', "measures": [{"n": 1, "key": 2, "time": "4/4", "clef": "treble", "s1": "…"}, …], "unsure": [bar numbers you are not sure about]}' . ($n > 1 ? ', …' : '') . '], '
+        . '{"lines": [{"line": ' . $first . ', "measures": [{"n": 1, "key": 2, "time": "4/4", "clef": "treble", ' . (($c['staves'] ?? 1) === 2 ? '"clef2": "bass", "s1": "…", "s2": "…"' : '"s1": "…"') . '}, …], "unsure": [bar numbers you are not sure about]}' . ($n > 1 ? ', …' : '') . '], '
         . '"warnings": [short friendly notes for a parent, at most three]}' . "\n"
         . 'Give key, time and clef on the first measure of each line. Before replying, check that each bar adds up to the time signature, and that every F, C, G… has the sharps or flats of the key signature applied.';
     $parts[] = ['text' => $text];
@@ -634,7 +647,7 @@ function riffi_check_parts(array $pairs, string $instrument, array $ctx, array $
         $parts[] = ['image' => $render];
     }
     $text = 'For each line above, picture A is a photo of ONE line of printed music and picture B is a computer engraving of our transcription of it. '
-        . riffi_instrument_text($instrument) . "\n"
+        . (($ctx['staves'] ?? 1) === 2 ? 'Each line is a grand staff (two staves joined by a brace, played together): s1 = upper staff, s2 = lower staff, bar N of both in the same measure; check each staff\'s clef as printed (the lower one may be treble). Ignore fingering numbers. ' : riffi_instrument_text($instrument)) . "\n"
         . ($ctx['key'] !== null ? 'Key signature: ' . riffi_key_name($ctx['key']) . '. ' : '')
         . ($ctx['time'] !== null ? "Time signature: {$ctx['time']}. " : '') . "\n";
     foreach ($pairs as $i => $_) {
@@ -1612,6 +1625,7 @@ function riffi_validate_overview(string $text): array
         'key' => is_numeric($key) && (int) $key >= -7 && (int) $key <= 7 ? (int) $key : null,
         'time' => $time !== null && preg_match('#^\d{1,2}/(1|2|4|8|16|32)$#', $time) ? $time : null,
         'clef' => in_array($d['clef'] ?? null, ['treble', 'bass', 'alto', 'tenor'], true) ? $d['clef'] : null,
+        'clef2' => in_array($d['clef2'] ?? null, ['treble', 'bass', 'alto', 'tenor'], true) ? $d['clef2'] : null,
         'staves' => (int) ($d['staves'] ?? 1) === 2 ? 2 : 1,
         'pickup' => !empty($d['pickup']),
         'pickup_notes' => $pickupNotes !== '' && riffi_check_staff($pickupNotes) === null ? $pickupNotes : '',

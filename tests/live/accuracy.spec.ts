@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compareScores, firstReadScore, formatReport, type AccuracyReport } from '../../src/sheet/accuracy';
+import { compareHands, compareScores, exactCounts, firstReadScore, formatReport, type AccuracyReport } from '../../src/sheet/accuracy';
 import type { RnScore } from '../../src/sheet/notation';
 import type { ReadResult } from '../../src/sheet/reader';
 
@@ -122,6 +122,14 @@ for (const file of fixtures) {
     console.log(`lines read ${result.timings.lines_read}/${result.timings.lines}, failed: ${JSON.stringify(result.failed)}, retries ${result.timings.retries}, waited ${Math.round(result.timings.wait_ms / 1000)} s`);
     console.log(formatReport(first, 'FIRST READ: '));
     console.log(formatReport(final, 'AFTER CHECK: '));
+    if (ref.staves === 2) {
+      // Piano: each hand on its own (right = upper staff, left = lower staff).
+      const hands = compareHands(result.score, ref);
+      for (const [name, r] of [['Right hand', hands.right], ['Left hand', hands.left]] as const) {
+        const c = exactCounts(r);
+        console.log(`${name}: ${c.bars}/${c.of} bars exactly right, ${c.notes}/${c.notesOf} notes with the right pitch`);
+      }
+    }
 
     mkdirSync(outDir, { recursive: true });
     const stamp = new Date().toISOString().slice(0, 10);

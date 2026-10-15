@@ -3,6 +3,7 @@ import { DIFFICULTIES, INSTRUMENTS, TEMPO_MAX, TEMPO_MIN, type Difficulty, type 
 import { t } from '../../i18n';
 import { useApp } from '../../app/state';
 import { useKidInstrument } from '../../app/useKidInstrument';
+import { useWakeLock } from '../../app/wakeLock';
 import { navigate } from '../../app/router';
 import { Icon } from '../../components/Icon';
 import { INSTRUMENT_ICON } from '../../components/instrumentIcons';
@@ -96,15 +97,7 @@ export default function PracticeScreen({ id, query }: { id: string; query: URLSe
   }, [ui]);
 
   // Keep the screen awake while practising.
-  useEffect(() => {
-    if (ui !== 'running' && ui !== 'countin') return;
-    let lock: { release: () => Promise<void> } | null = null;
-    const nav = navigator as Navigator & { wakeLock?: { request: (t: 'screen') => Promise<{ release: () => Promise<void> }> } };
-    nav.wakeLock?.request('screen').then((l) => (lock = l)).catch(() => undefined);
-    return () => {
-      void lock?.release().catch(() => undefined);
-    };
-  }, [ui]);
+  useWakeLock(ui === 'running' || ui === 'countin');
 
   useEffect(() => () => run.current?.dispose(), []);
 

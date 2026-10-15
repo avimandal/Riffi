@@ -40,7 +40,9 @@
   container-type: inline-size;
   position: relative;
   width: 100%;
-  max-width: 560px;
+  /* Never taller than the screen leaves room for (title above, bottom tabs below): the
+     device is about 1.68 times as tall as it is wide, so Start/Stop always shows. */
+  max-width: min(560px, max(300px, calc((100dvh - 210px) / 1.68)));
   margin: 0 auto;
   padding: 10px 14px 12px;
   border-radius: 36px;
@@ -519,4 +521,14 @@
   .lcd-rec {
     animation: none;
   }
+}
+
+/* Accent button: a big ">" accent mark when on, a dash when every beat is the same. */
+.g-accent-mark {
+  font-size: 24px;
+  font-weight: 900;
+  line-height: 1;
+}
+.lcd-accent {
+  font-weight: 900;
 }

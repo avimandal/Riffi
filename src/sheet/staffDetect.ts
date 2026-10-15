@@ -210,7 +210,33 @@ export function detectStaves(gray: Uint8ClampedArray | Uint8Array | Float32Array
   // A real staff runs a good way across (lines are broken by notes, so be lenient).
   const staves = cands.filter((s) => s.x1 - s.x0 >= span * 0.3 && s.hits.length >= 5);
   staves.sort((a, b) => topAt(a, width / 2) - topAt(b, width / 2));
-  // Overlapping leftovers: keep the best supported.
+  // Overlapping leftovers: keep the best supported (its position is checked below).
+  const paper = (() => {
+    const v: number[] = [];
+    for (let i = 0; i < gray.length; i += 97) v.push(gray[i]);
+    v.sort((a, b) => a - b);
+    return v[Math.floor(v.length * 0.8)] ?? 255;
+  })();
+  const lineCover = (st: Staff, from: number, to: number) => {
+    let worst = 1;
+    for (let l = 0; l < 5; l++) {
+      let n = 0;
+      let dark = 0;
+      for (let x = Math.round(from); x <= to; x += 3) {
+        const y = Math.round(topAt(st, x) + l * st.spacing);
+        n++;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy >= 0 && yy < height && gray[yy * width + x] < paper * 0.72) {
+            dark++;
+            break;
+          }
+        }
+      }
+      if (n) worst = Math.min(worst, dark / n);
+    }
+    return worst;
+  };
   const out: (Staff & { hits: Hit[] })[] = [];
   for (const s of staves) {
     const prev = out[out.length - 1];
@@ -220,20 +246,140 @@ export function detectStaves(gray: Uint8ClampedArray | Uint8Array | Float32Array
     }
     out.push(s);
   }
+  // A staff can be found one line off, along all or part of its length: four real lines
+  // plus the ledger lines of a run of low (or high) notes, with beams hiding the real top
+  // line. Its fifth "line" is broken where the ledger notes stop. So check it in short
+  // stretches, move the hits of any stretch that's a line off, and fit it again.
+  for (let k = 0; k < out.length; k++) {
+    const st = out[k];
+    const seg = Math.max(8 * st.spacing, (st.x1 - st.x0) / 8);
+    const shiftAt: { from: number; to: number; by: number }[] = [];
+    for (let from = st.x0; from < st.x1; from += seg) {
+      const to = Math.min(st.x1, from + seg);
+      let by = 0;
+      let best = lineCover(st, from, to);
+      for (const d of [-1, 1]) {
+        const c = lineCover({ ...st, coef: [st.coef[0] + d * st.spacing, st.coef[1], st.coef[2]] }, from, to);
+        if (c > best + 0.15 && c >= 0.7) {
+          by = d;
+          best = c;
+        }
+      }
+      if (by) shiftAt.push({ from, to, by });
+    }
+    if (shiftAt.length === 0) continue;
+    const moved = st.hits.map((h) => {
+      const s2 = shiftAt.find((z) => h.x >= z.from && h.x <= z.to);
+      return s2 ? { ...h, top: h.top + s2.by * st.spacing } : h;
+    });
+    const refit = build(moved);
+    // Only if it fits better along (nearly) the whole staff.
+    if (refit && refit.x1 - refit.x0 >= 0.9 * (st.x1 - st.x0) && lineCover(refit, st.x0, st.x1) > lineCover(st, st.x0, st.x1)) out[k] = refit;
+  }
   return out.map(({ coef, spacing, x0, x1 }) => ({ coef, spacing, x0, x1 }));
 }
 
+/** How sure the join between two staves needs to be (see joinedStaves). */
+export const SYSTEM_JOIN = {
+  /** Share of the gap's rows with ink at the left edge (brace or the system's opening line). */
+  leftCoverage: 0.85,
+  /** Share of the gap's rows a bar line must cover to count as running through. */
+  barCoverage: 0.9,
+  /** Bar lines running through the gap needed (when the left edge doesn't decide it). */
+  barLines: 2,
+} as const;
+
+type Gray = Uint8ClampedArray | Uint8Array | Float32Array;
+
 /**
- * Group staves into systems (pairs for piano) and work out crop bands that
- * split the space between neighbouring systems.
+ * Are two neighbouring staves (upper `a`, lower `b`) one system? A grand staff
+ * is joined at the left by a brace and the system's opening line, and its bar
+ * lines usually run straight through from one staff to the other; separate
+ * lines of single-staff music have empty paper between them. Pure.
  */
-export function systemBands(staves: Staff[], width: number, height: number, stavesPerSystem: 1 | 2 = 1): SystemBand[] {
-  const groups: Staff[][] = [];
-  if (stavesPerSystem === 2 && staves.length >= 2) {
-    for (let i = 0; i < staves.length; i += 2) groups.push(staves.slice(i, i + 2));
-  } else {
-    staves.forEach((s) => groups.push([s]));
+export function joinedStaves(gray: Gray, width: number, height: number, a: Staff, b: Staff): boolean {
+  const sp = (a.spacing + b.spacing) / 2;
+  const gapAt = (x: number) => [Math.ceil(topAt(a, x) + 4 * a.spacing + 0.35 * sp), Math.floor(topAt(b, x) - 0.35 * sp)] as const;
+  const left = Math.max(0, Math.min(a.x0, b.x0));
+  const [g0, g1] = gapAt(left);
+  // Too far apart for a grand staff (more than ~12 line spaces of paper), or overlapping.
+  if (g1 - g0 < 2 || g1 - g0 > 12 * sp) return false;
+  // Paper brightness around the gap; ink is clearly darker.
+  const samples: number[] = [];
+  for (let y = g0; y <= g1; y += 2) for (let x = Math.round(left); x < width; x += 7) samples.push(gray[y * width + x]);
+  samples.sort((p, q) => p - q);
+  const paper = samples[Math.floor(samples.length * 0.7)] ?? 255;
+  const ink = (x: number, y: number) => x >= 0 && x < width && y >= 0 && y < height && gray[y * width + x] < paper * 0.62;
+
+  // 1. The left edge: a brace or the opening line crosses (almost) every row of the gap.
+  const xs = Math.round(left - 4 * sp);
+  const xe = Math.round(left + 1.2 * sp);
+  let rows = 0;
+  let hit = 0;
+  for (let y = g0; y <= g1; y++) {
+    rows++;
+    for (let x = xs; x <= xe; x++) {
+      if (ink(x, y)) {
+        hit++;
+        break;
+      }
+    }
   }
+  if (rows > 0 && hit / rows >= SYSTEM_JOIN.leftCoverage) return true;
+
+  // 2. Bar lines that run through the gap from one staff to the other.
+  const right = Math.min(width - 2, Math.max(a.x1, b.x1));
+  let lines = 0;
+  let lastX = -Infinity;
+  for (let x = Math.round(left + 5 * sp); x <= right; x++) {
+    const [y0, y1] = gapAt(x);
+    if (y1 <= y0) continue;
+    let covered = 0;
+    for (let y = y0; y <= y1; y++) if (ink(x, y) || ink(x - 1, y) || ink(x + 1, y)) covered++;
+    if (covered / (y1 - y0 + 1) >= SYSTEM_JOIN.barCoverage) {
+      if (x - lastX > 2 * sp) lines++;
+      lastX = x;
+      if (lines >= SYSTEM_JOIN.barLines) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Group staves into systems from the picture: neighbours joined by a brace or
+ * by bar lines running through them are one system (at most two staves: a
+ * grand staff). Without a picture to look at, `fallback` staves per system.
+ * Pure.
+ */
+export function groupSystems(staves: Staff[], image?: { gray: Gray; width: number; height: number }, fallback: 1 | 2 = 1): Staff[][] {
+  if (!image) return fallbackGroups(staves, fallback);
+  const joins = staves.slice(0, -1).map((s, i) => joinedStaves(image.gray, image.width, image.height, s, staves[i + 1]));
+  // Nothing joined anywhere, but the child plays piano: pair them up as before.
+  if (fallback === 2 && !joins.some(Boolean)) return fallbackGroups(staves, 2);
+  const groups: Staff[][] = [];
+  for (let i = 0; i < staves.length; i++) {
+    if (joins[i]) {
+      groups.push([staves[i], staves[i + 1]]);
+      i++;
+    } else groups.push([staves[i]]);
+  }
+  return groups;
+}
+
+function fallbackGroups(staves: Staff[], perSystem: 1 | 2): Staff[][] {
+  const groups: Staff[][] = [];
+  if (perSystem === 2 && staves.length >= 2) {
+    for (let i = 0; i < staves.length; i += 2) groups.push(staves.slice(i, i + 2));
+  } else staves.forEach((s) => groups.push([s]));
+  return groups;
+}
+
+/**
+ * Crop bands for systems: each band splits the space between neighbouring
+ * systems. Pass the groups from groupSystems, or a number of staves per system.
+ */
+export function systemBands(staves: Staff[], width: number, height: number, systems: 1 | 2 | Staff[][] = 1): SystemBand[] {
+  const groups = Array.isArray(systems) ? systems : fallbackGroups(staves, systems);
   const extent = (g: Staff[]) => {
     let top = Infinity;
     let bottom = -Infinity;

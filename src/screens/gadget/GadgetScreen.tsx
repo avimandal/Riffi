@@ -6,6 +6,7 @@ import { SevenSeg } from '../../components/SevenSeg';
 import { prefersReducedMotion } from '../../components/motion';
 import { resumeAudio } from '../../audio/context';
 import { MicError } from '../../audio/mic';
+import { useWakeLock } from '../../app/wakeLock';
 import { METRONOME_SOUNDS } from '../../audio/sounds';
 import { recordSession } from '../../data/repo';
 import type { BadgeId } from '../../data/stats';
@@ -170,6 +171,8 @@ export default function GadgetScreen() {
   const [remainingMs, setRemainingMs] = useState(0);
   const [playedMs, setPlayedMs] = useState(0);
   const [listening, setListening] = useState(false);
+  // Keep the screen awake while the metronome clicks or the tuner listens (released when they stop).
+  useWakeLock(running || listening);
   const [reading, setReading] = useState<TunerReading | null>(null);
   const [string, setString] = useState<ViolinString | null>(null);
   const [toneNote, setToneNote] = useState<string | null>(null);
@@ -525,7 +528,11 @@ export default function GadgetScreen() {
                       <span className="lcd-of">/{beatsPerBar(m.timeSignature)}</span>
                     </span>
                     <span>{t.gadget.soundsLcd[m.sound]}</span>
-                    {m.accent && <span>{t.gadget.accentOn}</span>}
+                    {m.accent && (
+                      <span className="lcd-accent" data-testid="lcd-accent" title={t.gadget.accentOnTitle}>
+                        {t.gadget.accentOn}
+                      </span>
+                    )}
                     {m.subdivision !== 'none' && <span>{{ eighths: '♪♪', triplets: '3', sixteenths: '♬♬' }[m.subdivision]}</span>}
                     {listening && <span className="lcd-played">{formatClock(playedMs)}</span>}
                   </div>
@@ -585,11 +592,22 @@ export default function GadgetScreen() {
                 <DeviceButton label={t.gadget.buttons.slower} caption={t.gadget.buttons.slowerCaption} repeat onPress={() => updateMetro({ bpm: clampTempo(settingsRef.current.bpm - 1) })} testId="tempo-down">
                   <Icon name="remove" />
                 </DeviceButton>
-                <DeviceButton label={t.gadget.buttons.tapLabel} caption={t.gadget.buttons.tapCaption} onPress={tap} className="g-wide">
+                <DeviceButton label={t.gadget.buttons.tapLabel} caption={t.gadget.buttons.tapCaption} onPress={tap}>
                   {t.gadget.buttons.tap.toUpperCase()}
                 </DeviceButton>
                 <DeviceButton label={t.gadget.buttons.faster} caption={t.gadget.buttons.fasterCaption} repeat onPress={() => updateMetro({ bpm: clampTempo(settingsRef.current.bpm + 1) })} testId="tempo-up">
                   <Icon name="add" />
+                </DeviceButton>
+                <DeviceButton
+                  label={t.gadget.buttons.accentLabel(m.accent)}
+                  caption={t.gadget.buttons.accent}
+                  onPress={() => updateMetro({ accent: !settingsRef.current.accent })}
+                  pressed={m.accent}
+                  testId="accent"
+                >
+                  <span className="g-accent-mark" aria-hidden>
+                    {m.accent ? '>' : '–'}
+                  </span>
                 </DeviceButton>
                 <DeviceButton
                   label={running ? t.gadget.buttons.stop : t.gadget.buttons.start}

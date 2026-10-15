@@ -1,0 +1,113 @@
+{
+ "about": "Hand transcription of piano-allegro.webp (a photo of a printed beginner piano piece, uploaded by the app's owner), checked note by note against zoomed crops and the note-head positions measured on the photo. Three grand-staff systems (bars 1-5, 6-10, 11-16), BOTH staves in treble clef. Staccato dots, slurs, 'legato', fingering numbers and the pencil marks are left out. Bars 1-8 and 9-16 are each repeated.",
+ "title": "Allegro",
+ "instrument": "piano",
+ "tempo": {
+  "text": "Allegro"
+ },
+ "staves": 2,
+ "lines": [
+  [
+   1,
+   5
+  ],
+  [
+   6,
+   10
+  ],
+  [
+   11,
+   16
+  ]
+ ],
+ "uncertain": [],
+ "measures": [
+  {
+   "n": 1,
+   "key": 0,
+   "time": "4/4",
+   "clef": "treble",
+   "clef2": "treble",
+   "s1": "C5q E5q G5q C6q",
+   "s2": "C4e G4e E4e G4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 2,
+   "s1": "B5e G5e A5e B5e C6q G5q",
+   "s2": "D4e G4e F4e G4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 3,
+   "s1": "E5q E5q E5q G5q",
+   "s2": "C4e G4e E4e G4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 4,
+   "s1": "A5e G5e F5e E5e D5h",
+   "s2": "G3e E4e C4e E4e G3e D4e B3e D4e"
+  },
+  {
+   "n": 5,
+   "s1": "C5q E5q G5q C6q",
+   "s2": "C4e G4e E4e G4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 6,
+   "s1": "B5e G5e A5e B5e C6q G5q",
+   "s2": "D4e G4e F4e G4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 7,
+   "s1": "E5e G5e C6e B5e A5e G5e F5e E5e",
+   "s2": "G3e E4e C4e E4e G3e E4e C4e E4e"
+  },
+  {
+   "n": 8,
+   "repeat": "end",
+   "s1": "E5q D5q C5h",
+   "s2": "G3e F4e B3e F4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 9,
+   "repeat": "start",
+   "s1": "D5q D5q D5q F5q",
+   "s2": "B3e G4e D4e G4e B3e G4e D4e G4e"
+  },
+  {
+   "n": 10,
+   "s1": "E5e G5e C6e B5e A5e G5e F5e E5e",
+   "s2": "C4e G4e E4e G4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 11,
+   "s1": "D5q D5q D5q F5q",
+   "s2": "B3e G4e D4e G4e B3e G4e D4e G4e"
+  },
+  {
+   "n": 12,
+   "s1": "E5e G5e C6e B5e A5e G5e F5e E5e",
+   "s2": "C4e G4e E4e G4e C4e G4e E4e G4e"
+  },
+  {
+   "n": 13,
+   "s1": "F5e C5e F5e A5e C6e A5e C6e A5e",
+   "s2": "C4e A4e F4e A4e C4e A4e F4e A4e"
+  },
+  {
+   "n": 14,
+   "s1": "G5q E5q G5e F5e E5e D5e",
+   "s2": "C4e G4e E4e G4e F3e D4e A3e D4e"
+  },
+  {
+   "n": 15,
+   "s1": "F5e E5e D5e C5e E5q D5q",
+   "s2": "G3e E4e C4e E4e G3e F4e B3e F4e"
+  },
+  {
+   "n": 16,
+   "repeat": "end",
+   "s1": "C5w",
+   "s2": "C4e G4e E4e G4e C4h"
+  }
+ ]
+}

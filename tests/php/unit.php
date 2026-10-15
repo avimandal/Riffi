@@ -158,6 +158,10 @@ $parts = riffi_line_parts([['image/jpeg', 'x'], ['image/jpeg', 'y'], ['image/jpe
 check('later lines do not mention a pickup', !str_contains(end($parts)['text'], 'pickup'));
 check('several lines: each picture labelled, in order', $parts[0]['text'] === 'Line 3:' && $parts[5]['image'][1] === 'z' && str_contains(end($parts)['text'], 'lines 3 to 5 (of 7)'));
 check('6/8 is 3 quarter notes', riffi_bar_beats('6/8') === '3 quarter notes');
+$gsParts = riffi_line_parts([['image/jpeg', 'x']], 'violin', ['key' => 0, 'time' => '4/4', 'clef' => 'treble', 'clef2' => 'treble', 'staves' => 2, 'first_bar' => 1, 'line' => 1, 'lines' => 3, 'page' => 1, 'pages' => 1, 'pickup' => null, 'pickup_notes' => '']);
+$gs = end($gsParts)['text'];
+check('a grand staff is read as one line: both staves, bars together, each clef as printed', str_contains($gs, 'grand staff') && str_contains($gs, 'SAME measure') && str_contains($gs, '"clef2"') && str_contains($gs, '"s2"') && str_contains($gs, 'treble clef on the lower staff') && str_contains($gs, 'fingering') && !str_contains($gs, 'only the violin line'));
+check('rules never assume a bass lower staff', str_contains(riffi_rn_rules(), 'both staves are often treble'));
 $cp = riffi_check_parts([[['image/jpeg', 'a'], ['image/png', 'b']], [['image/jpeg', 'c'], ['image/png', 'd']]], 'violin', ['key' => 2, 'time' => '4/4', 'line' => 1], [2, 5], ['{"measures":[]}', '{"measures":[1]}'], [['Bar 3 adds up to 3 beats instead of 4 beats.'], []]);
 check('check sends each photo then its engraving', $cp[1]['image'][1] === 'a' && $cp[3]['image'][1] === 'b' && $cp[5]['image'][1] === 'c' && str_contains($cp[4]['text'], 'Line 5'));
 check('check lists the code problems per line', str_contains(end($cp)['text'], "Line 2 transcription") && str_contains(end($cp)['text'], 'Bar 3 adds up to 3 beats'));

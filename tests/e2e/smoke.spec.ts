@@ -123,7 +123,7 @@ test('Settings: no gate, a site-wide music reader behind the admin password, and
   await expect(dialog).toHaveCount(0);
 });
 
-test('bottom navigation and switching player from the top bar', async ({ page }) => {
+test('bottom navigation and switching player from the top bar (not on Tools)', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('add-kid').click();
   await page.getByLabel('Name').fill('Ari');
@@ -139,6 +139,11 @@ test('bottom navigation and switching player from the top bar', async ({ page })
     await nav.getByRole('link', { name: tab }).click();
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
     const sw = page.getByRole('button', { name: 'Switch player' });
+    // Tools has no top bar, so the whole Tuner & Metronome fits on a phone.
+    if (tab === 'Tools') {
+      await expect(sw).toHaveCount(0);
+      continue;
+    }
     await expect(sw).toContainText('Ari!');
     expect((await sw.boundingBox())!.height).toBeGreaterThanOrEqual(48);
   }
