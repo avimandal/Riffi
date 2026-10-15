@@ -14,12 +14,15 @@ check_circle
 close
 cloud_off
 content_copy
+counter_1
 crop
 delete
 delete_forever
+done
 download
 edit
 expand_more
+failed
 favorite
 graphic_eq
 hearing

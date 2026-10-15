@@ -529,8 +529,8 @@ export default function GadgetScreen() {
                     </span>
                     <span>{t.gadget.soundsLcd[m.sound]}</span>
                     {m.accent && (
-                      <span className="lcd-accent" data-testid="lcd-accent" title={t.gadget.accentOnTitle}>
-                        {t.gadget.accentOn}
+                      <span className="lcd-accent" data-testid="lcd-accent" title={t.gadget.accentOnTitle} aria-label={t.gadget.accentOnTitle}>
+                        <Icon name="counter_1" />
                       </span>
                     )}
                     {m.subdivision !== 'none' && <span>{{ eighths: '♪♪', triplets: '3', sixteenths: '♬♬' }[m.subdivision]}</span>}
@@ -592,7 +592,7 @@ export default function GadgetScreen() {
                 <DeviceButton label={t.gadget.buttons.slower} caption={t.gadget.buttons.slowerCaption} repeat onPress={() => updateMetro({ bpm: clampTempo(settingsRef.current.bpm - 1) })} testId="tempo-down">
                   <Icon name="remove" />
                 </DeviceButton>
-                <DeviceButton label={t.gadget.buttons.tapLabel} caption={t.gadget.buttons.tapCaption} onPress={tap}>
+                <DeviceButton label={t.gadget.buttons.tapLabel} onPress={tap}>
                   {t.gadget.buttons.tap.toUpperCase()}
                 </DeviceButton>
                 <DeviceButton label={t.gadget.buttons.faster} caption={t.gadget.buttons.fasterCaption} repeat onPress={() => updateMetro({ bpm: clampTempo(settingsRef.current.bpm + 1) })} testId="tempo-up">
@@ -606,7 +606,7 @@ export default function GadgetScreen() {
                   testId="accent"
                 >
                   <span className="g-accent-mark" aria-hidden>
-                    {m.accent ? '>' : '–'}
+                    <Icon name="counter_1" filled={m.accent} />
                   </span>
                 </DeviceButton>
                 <DeviceButton
