@@ -12,8 +12,11 @@ const NAV = [
   { to: '/settings', icon: 'settings', label: () => t.nav.settings },
 ];
 
-/** The main screens (the bottom tabs) show the player switcher at the top. */
-const MAIN = new Set(NAV.map((n) => n.to));
+/**
+ * The main screens (the bottom tabs) show the player switcher at the top, except
+ * Tools: there the whole Tuner & Metronome (Start/Stop included) must fit on a phone.
+ */
+const MAIN = new Set(NAV.map((n) => n.to).filter((to) => to !== '/gadget'));
 
 export function Layout({ children, nav, path }: { children: ReactNode; nav: boolean; path: string }) {
   const { online, profile } = useApp();
